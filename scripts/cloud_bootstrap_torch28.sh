@@ -28,8 +28,8 @@ wheel = Path("/tmp/transformer_engine_torch.whl")
 urllib.request.urlretrieve(url, wheel)
 target = Path(site.getusersitepackages())
 target.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(wheel) as archive:
-        archive.extractall(target)
+with zipfile.ZipFile(wheel) as archive:
+    archive.extractall(target)
 print(f"transformer_engine_torch_wheel={wheel.stat().st_size} target={target}")
 PY
     nvidia_lib_path=$(find /home/user/conda/lib/python3.12/site-packages/nvidia \
