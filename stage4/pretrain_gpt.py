@@ -37,8 +37,8 @@ def _ademamix_config_to_kwargs(config, model_chunks, pg_collection):
         "alpha": 8.0,
         "eps": config.adam_eps,
         "weight_decay": config.weight_decay,
-        "beta3_warmup_steps": config.lr_decay_iters,
-        "alpha_warmup_steps": config.lr_decay_iters,
+        "beta3_warmup_steps": None,
+        "alpha_warmup_steps": None,
     }
 
 
