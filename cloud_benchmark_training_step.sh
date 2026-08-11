@@ -14,7 +14,9 @@ mkdir -p "$log_dir" "$output_dir"
         nvidia_lib_path=$(find /home/user/conda/lib/python3.12/site-packages/nvidia \
             -mindepth 2 -maxdepth 2 -type d -name lib -print | paste -sd: -)
         export LD_LIBRARY_PATH=${nvidia_lib_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-        export NVTE_PROJECT_BUILDING=1
+        export CUDNN_HOME=/home/user/conda/lib/python3.12/site-packages/nvidia/cudnn
+        export CURAND_HOME=/home/user/conda/lib/python3.12/site-packages/nvidia/curand
+        export NVRTC_HOME=/home/user/conda/lib/python3.12/site-packages/nvidia/cuda_nvrtc
     else
         export PYTHONNOUSERSITE=1
     fi
