@@ -20,5 +20,20 @@ code=$?
 echo "EXIT=$code"
 echo "LOG=$log"
 echo "OUTPUT_DIR=$output_dir"
-tail -n 240 "$log"
+tail -n 80 "$log"
+if [[ -f "$output_dir/results.csv" ]]; then
+    echo "=== RESULTS CSV ==="
+    cat "$output_dir/results.csv"
+fi
+if [[ -f "$output_dir/results.json" ]]; then
+    python - "$output_dir/results.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    payload = json.load(handle)
+print("=== BENCHMARK METADATA ===")
+print(json.dumps(payload["metadata"], sort_keys=True))
+PY
+fi
 exit 0
