@@ -25,3 +25,26 @@ if (( ${#config_logs[@]} > 0 )); then
             "$config_log" | tail -n 5 || true
     done
 fi
+
+if [[ -f "$output_dir/results.json" ]]; then
+    python - "$output_dir/results.json" <<'PY'
+import json
+import sys
+from collections import Counter
+
+with open(sys.argv[1]) as handle:
+    results = json.load(handle).get("results", [])
+counts = Counter(result["status"] for result in results)
+print("RESULT_PROGRESS", len(results), json.dumps(counts, sort_keys=True))
+for result in results:
+    print(
+        "RESULT_ROW",
+        result["model"],
+        result["precision"],
+        result["optimizer"],
+        result["batch_size"],
+        result["status"],
+        result.get("mean_step_ms"),
+    )
+PY
+fi
