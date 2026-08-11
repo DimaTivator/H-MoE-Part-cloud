@@ -570,6 +570,18 @@ def make_fp8_adamw(base_class):
     return FP8StateAdamW
 
 
+def make_fp8_ademamix(base_class):
+    class FP8StateAdEMAMix(FP8StateOptimizerMixin, base_class):
+        state_specs = (
+            ("exp_avg_fast", True),
+            ("exp_avg_slow", True),
+            ("exp_avg_sq", False),
+        )
+
+    FP8StateAdEMAMix.__name__ = "FP8StateAdEMAMix"
+    return FP8StateAdEMAMix
+
+
 def make_fp8_soap(base_class):
     class FP8StateSOAP(FP8StateOptimizerMixin, base_class):
         state_specs = (

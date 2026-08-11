@@ -26,6 +26,27 @@ precision = take_state_precision()
 
 import megatron.core.optimizer.emerging_optimizers as mcore_eopt
 import megatron.training.arguments as mcore_arguments
+from stage4.ademamix import AdEMAMix
+
+
+def _ademamix_config_to_kwargs(config, model_chunks, pg_collection):
+    del model_chunks, pg_collection
+    return {
+        "lr": config.lr,
+        "betas": (config.adam_beta1, config.adam_beta2, 0.9999),
+        "alpha": 8.0,
+        "eps": config.adam_eps,
+        "weight_decay": config.weight_decay,
+        "beta3_warmup_steps": config.lr_decay_iters,
+        "alpha_warmup_steps": config.lr_decay_iters,
+    }
+
+
+mcore_eopt._EMERGING_OPTIMIZERS["ademamix"] = mcore_eopt.EmergingOptimizerEntry(
+    optimizer_cls=AdEMAMix,
+    config_to_kwargs=_ademamix_config_to_kwargs,
+    default_param_overrides={},
+)
 
 # MCore registers SOAP through the generic fallback path, which leaves three gaps.
 # Without the param overrides the tied 50,304x1,536 embedding is handed to SOAP,
@@ -48,6 +69,9 @@ soap_entry.default_param_overrides = mcore_eopt._default_param_overrides_factory
 
 
 def add_soap_args(parser):
+    for action in parser._actions:
+        if action.dest == "optimizer" and "ademamix" not in action.choices:
+            action.choices = [*action.choices, "ademamix"]
     group = parser.add_argument_group(title="stage4 soap")
     group.add_argument("--soap-shampoo-beta", type=float, default=0.95)
     group.add_argument("--soap-precondition-frequency", type=int, default=1)
@@ -80,6 +104,7 @@ if precision == "fp8":
 
     from stage4.fp8_optimizer_states import (
         FP8StateOptimizerMixin,
+        make_fp8_ademamix,
         make_fp8_adamw,
         make_fp8_soap,
     )
@@ -88,6 +113,7 @@ if precision == "fp8":
         state_specs = (("momentum_buffer", True),)
 
     mcore_optimizer.Adam = make_fp8_adamw(mcore_optimizer.Adam)
+    _EMERGING_OPTIMIZERS["ademamix"].optimizer_cls = make_fp8_ademamix(AdEMAMix)
     _EMERGING_OPTIMIZERS["muon"].optimizer_cls = FP8StateTensorParallelMuon
     _EMERGING_OPTIMIZERS["soap"].optimizer_cls = make_fp8_soap(
         _EMERGING_OPTIMIZERS["soap"].optimizer_cls
