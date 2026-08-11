@@ -46,6 +46,22 @@ def csv_values(value, allowed=None, cast=str):
     return result
 
 
+def batch_layout(global_batch, micro_batch_cap, data_parallel_size):
+    if global_batch % data_parallel_size != 0:
+        raise ValueError(
+            f"global batch {global_batch} must be divisible by data parallel size "
+            f"{data_parallel_size}"
+        )
+    per_rank_batch = global_batch // data_parallel_size
+    micro_batch = min(per_rank_batch, micro_batch_cap or per_rank_batch)
+    if per_rank_batch % micro_batch != 0:
+        raise ValueError(
+            f"per-rank batch {per_rank_batch} must be divisible by micro batch "
+            f"{micro_batch}"
+        )
+    return micro_batch, per_rank_batch // micro_batch
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models", default="257m,500m")
@@ -58,6 +74,7 @@ def parse_args():
         default=None,
         help="cap the micro batch and use gradient accumulation for larger global batches",
     )
+    parser.add_argument("--data-parallel-size", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=10)
     parser.add_argument("--measure-steps", type=int, default=50)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
@@ -76,12 +93,13 @@ def parse_args():
         parser.error("warmup and measurement lengths must be positive")
     if args.micro_batch_size is not None and args.micro_batch_size < 1:
         parser.error("micro batch size must be positive")
+    if args.data_parallel_size < 1:
+        parser.error("data parallel size must be positive")
     for batch in args.batches:
-        micro_batch = min(batch, args.micro_batch_size or batch)
-        if batch % micro_batch != 0:
-            parser.error(
-                f"global batch {batch} must be divisible by micro batch {micro_batch}"
-            )
+        try:
+            batch_layout(batch, args.micro_batch_size, args.data_parallel_size)
+        except ValueError as error:
+            parser.error(str(error))
     return args
 
 
@@ -118,6 +136,7 @@ def build_command(
     optimizer,
     global_batch,
     micro_batch,
+    data_parallel_size,
     warmup,
     measured,
 ):
@@ -129,7 +148,7 @@ def build_command(
         "torch.distributed.run",
         "--standalone",
         "--nproc-per-node",
-        "1",
+        str(data_parallel_size),
         "stage4/pretrain_gpt.py",
         "--optimizer-state-precision",
         "fp8" if precision == "full_fp8" else "fp32",
@@ -263,6 +282,7 @@ def write_summary(output_dir, results, metadata):
         "batch_size",
         "micro_batch_size",
         "gradient_accumulation_steps",
+        "data_parallel_size",
         "status",
         "mean_step_ms",
         "median_step_ms",
@@ -291,6 +311,7 @@ def result_key(result):
         result["optimizer"],
         result["batch_size"],
         result.get("micro_batch_size", result["batch_size"]),
+        result.get("data_parallel_size", 1),
     )
 
 
@@ -303,11 +324,14 @@ def load_previous(output_dir):
 
 
 def run_one(root, output_dir, args, model, precision, optimizer, batch):
-    micro_batch = min(batch, args.micro_batch_size or batch)
-    accumulation_steps = batch // micro_batch
+    micro_batch, accumulation_steps = batch_layout(
+        batch, args.micro_batch_size, args.data_parallel_size
+    )
     stem = f"{model}_{precision}_{optimizer}_bs{batch}"
     if micro_batch != batch:
         stem += f"_mb{micro_batch}"
+    if args.data_parallel_size != 1:
+        stem += f"_dp{args.data_parallel_size}"
     log_path = output_dir / "logs" / f"{stem}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = build_command(
@@ -317,6 +341,7 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         optimizer,
         batch,
         micro_batch,
+        args.data_parallel_size,
         args.warmup_steps,
         args.measure_steps,
     )
@@ -370,6 +395,7 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         "batch_size": batch,
         "micro_batch_size": micro_batch,
         "gradient_accumulation_steps": accumulation_steps,
+        "data_parallel_size": args.data_parallel_size,
         "return_code": return_code,
         "wall_time_seconds": round(time.monotonic() - started, 3),
         "parameter_count": int(parameter_matches[-1]) if parameter_matches else None,
@@ -417,6 +443,7 @@ def main():
             "measure_steps": args.measure_steps,
             "sequence_length": 1024,
             "micro_batch_size_cap": args.micro_batch_size,
+            "data_parallel_size": args.data_parallel_size,
             "git_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
@@ -428,9 +455,17 @@ def main():
             for optimizer in args.optimizers:
                 oom_micro_batch = None
                 for batch in args.batches:
-                    micro_batch = min(batch, args.micro_batch_size or batch)
-                    accumulation_steps = batch // micro_batch
-                    key = (model, precision, optimizer, batch, micro_batch)
+                    micro_batch, accumulation_steps = batch_layout(
+                        batch, args.micro_batch_size, args.data_parallel_size
+                    )
+                    key = (
+                        model,
+                        precision,
+                        optimizer,
+                        batch,
+                        micro_batch,
+                        args.data_parallel_size,
+                    )
                     if oom_micro_batch is not None and micro_batch > oom_micro_batch:
                         result = {
                             "model": model,
@@ -439,6 +474,7 @@ def main():
                             "batch_size": batch,
                             "micro_batch_size": micro_batch,
                             "gradient_accumulation_steps": accumulation_steps,
+                            "data_parallel_size": args.data_parallel_size,
                             "status": "skipped_after_oom",
                             "samples": 0,
                             "message": "micro batch is larger than the first OOM micro batch",
@@ -452,7 +488,8 @@ def main():
                         print(
                             f"RUN model={model} precision={precision} optimizer={optimizer} "
                             f"global_batch={batch} micro_batch={micro_batch} "
-                            f"accumulation_steps={accumulation_steps}",
+                            f"accumulation_steps={accumulation_steps} "
+                            f"data_parallel_size={args.data_parallel_size}",
                             flush=True,
                         )
                         result = run_one(
@@ -461,7 +498,9 @@ def main():
                         print(
                             f"RESULT model={model} precision={precision} optimizer={optimizer} "
                             f"global_batch={batch} micro_batch={micro_batch} "
-                            f"accumulation_steps={accumulation_steps} status={result['status']} "
+                            f"accumulation_steps={accumulation_steps} "
+                            f"data_parallel_size={args.data_parallel_size} "
+                            f"status={result['status']} "
                             f"mean_step_ms={result.get('mean_step_ms')}",
                             flush=True,
                         )
