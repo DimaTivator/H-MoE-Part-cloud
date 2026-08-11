@@ -15,6 +15,7 @@ QUANT_EPS = 1e-30
 FLOAT32_MAX = float(torch.finfo(torch.float32).max)
 GROUPS_PER_BLOCK = 8
 NUM_WARPS = 4
+MAX_BATCHED_TENSORS = 128
 USE_BATCHED_CONVERSIONS = os.environ.get("STAGE4_FP8_BATCHED", "0") != "0"
 
 # Triton kernels can only close over globals declared as constexpr.
@@ -326,6 +327,10 @@ def _batched_tables(entries):
 
 
 def _batched_dequantize(entries, signed):
+    if len(entries) > MAX_BATCHED_TENSORS:
+        for start in range(0, len(entries), MAX_BATCHED_TENSORS):
+            _batched_dequantize(entries[start : start + MAX_BATCHED_TENSORS], signed)
+        return
     tables, total_groups = _batched_tables(entries)
     _batched_dequantize_kernel[(triton.cdiv(total_groups, GROUPS_PER_BLOCK),)](
         tables["data"], tables["value"], tables["scale"], tables["expand"], tables["sqrt"],
@@ -335,6 +340,10 @@ def _batched_dequantize(entries, signed):
 
 
 def _batched_quantize(entries, signed):
+    if len(entries) > MAX_BATCHED_TENSORS:
+        for start in range(0, len(entries), MAX_BATCHED_TENSORS):
+            _batched_quantize(entries[start : start + MAX_BATCHED_TENSORS], signed)
+        return
     tables, total_groups = _batched_tables(entries)
     _batched_quantize_kernel[(triton.cdiv(total_groups, GROUPS_PER_BLOCK),)](
         tables["value"], tables["data"], tables["scale"], tables["expand"], tables["sqrt"],
