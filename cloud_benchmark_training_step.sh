@@ -9,7 +9,11 @@ mkdir -p "$log_dir" "$output_dir"
 
 (
     set -eu
-    export PYTHONNOUSERSITE=1
+    if [[ ${MLSUB_IMAGE:-} == torch28 ]]; then
+        unset PYTHONNOUSERSITE
+    else
+        export PYTHONNOUSERSITE=1
+    fi
     export PYTHONUNBUFFERED=1
     export PYTHONPATH="$root/third_party/Megatron-LM:$root/third_party/emerging-optimizers:$root"
     export STAGE4_FP8_BATCHED=1
