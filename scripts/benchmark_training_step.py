@@ -142,6 +142,7 @@ def build_command(root, model_name, precision, optimizer, batch, warmup, measure
         "1",
         "--pipeline-model-parallel-size",
         "1",
+        "--no-gradient-accumulation-fusion",
         "--bf16",
         "--transformer-impl",
         "transformer_engine",
