@@ -21,6 +21,7 @@ MODELS = {
 PRECISIONS = ("bf16", "fp8_act", "full_fp8")
 OPTIMIZERS = ("adam", "ademamix", "muon", "soap")
 DEFAULT_BATCHES = (2, 4, 8, 16, 32, 64)
+SUPPORTED_BATCHES = (*DEFAULT_BATCHES, 128)
 ITERATION_RE = re.compile(
     r"iteration\s+(\d+)/\s*\d+.*elapsed time per iteration \(ms\):\s*([0-9.]+)"
 )
@@ -51,6 +52,12 @@ def parse_args():
     parser.add_argument("--precisions", default=",".join(PRECISIONS))
     parser.add_argument("--optimizers", default=",".join(OPTIMIZERS))
     parser.add_argument("--batches", default=",".join(map(str, DEFAULT_BATCHES)))
+    parser.add_argument(
+        "--micro-batch-size",
+        type=int,
+        default=None,
+        help="cap the micro batch and use gradient accumulation for larger global batches",
+    )
     parser.add_argument("--warmup-steps", type=int, default=10)
     parser.add_argument("--measure-steps", type=int, default=50)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
@@ -64,9 +71,17 @@ def parse_args():
     args.models = csv_values(args.models, MODELS)
     args.precisions = csv_values(args.precisions, PRECISIONS)
     args.optimizers = csv_values(args.optimizers, OPTIMIZERS)
-    args.batches = csv_values(args.batches, DEFAULT_BATCHES, int)
+    args.batches = csv_values(args.batches, SUPPORTED_BATCHES, int)
     if args.warmup_steps < 1 or args.measure_steps < 1:
         parser.error("warmup and measurement lengths must be positive")
+    if args.micro_batch_size is not None and args.micro_batch_size < 1:
+        parser.error("micro batch size must be positive")
+    for batch in args.batches:
+        micro_batch = min(batch, args.micro_batch_size or batch)
+        if batch % micro_batch != 0:
+            parser.error(
+                f"global batch {batch} must be divisible by micro batch {micro_batch}"
+            )
     return args
 
 
@@ -96,7 +111,16 @@ def hardware_metadata():
     }
 
 
-def build_command(root, model_name, precision, optimizer, batch, warmup, measured):
+def build_command(
+    root,
+    model_name,
+    precision,
+    optimizer,
+    global_batch,
+    micro_batch,
+    warmup,
+    measured,
+):
     model = MODELS[model_name]
     total_steps = warmup + measured
     command = [
@@ -179,9 +203,9 @@ def build_command(root, model_name, precision, optimizer, batch, warmup, measure
         "--clip-grad",
         "1.0",
         "--micro-batch-size",
-        str(batch),
+        str(micro_batch),
         "--global-batch-size",
-        str(batch),
+        str(global_batch),
         "--train-iters",
         str(total_steps),
         "--mock-data",
@@ -237,6 +261,8 @@ def write_summary(output_dir, results, metadata):
         "precision",
         "optimizer",
         "batch_size",
+        "micro_batch_size",
+        "gradient_accumulation_steps",
         "status",
         "mean_step_ms",
         "median_step_ms",
@@ -264,6 +290,7 @@ def result_key(result):
         result["precision"],
         result["optimizer"],
         result["batch_size"],
+        result.get("micro_batch_size", result["batch_size"]),
     )
 
 
@@ -276,7 +303,11 @@ def load_previous(output_dir):
 
 
 def run_one(root, output_dir, args, model, precision, optimizer, batch):
+    micro_batch = min(batch, args.micro_batch_size or batch)
+    accumulation_steps = batch // micro_batch
     stem = f"{model}_{precision}_{optimizer}_bs{batch}"
+    if micro_batch != batch:
+        stem += f"_mb{micro_batch}"
     log_path = output_dir / "logs" / f"{stem}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = build_command(
@@ -285,6 +316,7 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         precision,
         optimizer,
         batch,
+        micro_batch,
         args.warmup_steps,
         args.measure_steps,
     )
@@ -336,6 +368,8 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         "precision": precision,
         "optimizer": optimizer,
         "batch_size": batch,
+        "micro_batch_size": micro_batch,
+        "gradient_accumulation_steps": accumulation_steps,
         "return_code": return_code,
         "wall_time_seconds": round(time.monotonic() - started, 3),
         "parameter_count": int(parameter_matches[-1]) if parameter_matches else None,
@@ -382,6 +416,7 @@ def main():
             "warmup_steps": args.warmup_steps,
             "measure_steps": args.measure_steps,
             "sequence_length": 1024,
+            "micro_batch_size_cap": args.micro_batch_size,
             "git_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
@@ -391,37 +426,47 @@ def main():
     for model in args.models:
         for precision in args.precisions:
             for optimizer in args.optimizers:
-                stop_after_oom = False
+                oom_micro_batch = None
                 for batch in args.batches:
-                    key = (model, precision, optimizer, batch)
-                    if stop_after_oom:
+                    micro_batch = min(batch, args.micro_batch_size or batch)
+                    accumulation_steps = batch // micro_batch
+                    key = (model, precision, optimizer, batch, micro_batch)
+                    if oom_micro_batch is not None and micro_batch > oom_micro_batch:
                         result = {
                             "model": model,
                             "precision": precision,
                             "optimizer": optimizer,
                             "batch_size": batch,
+                            "micro_batch_size": micro_batch,
+                            "gradient_accumulation_steps": accumulation_steps,
                             "status": "skipped_after_oom",
                             "samples": 0,
-                            "message": "larger than the first OOM batch",
+                            "message": "micro batch is larger than the first OOM micro batch",
                         }
                     elif key in results_by_key and not args.rerun:
                         print(f"SKIP {key}: already recorded", flush=True)
                         if results_by_key[key]["status"] == "oom":
-                            stop_after_oom = True
+                            oom_micro_batch = micro_batch
                         continue
                     else:
-                        print(f"RUN model={model} precision={precision} optimizer={optimizer} batch={batch}", flush=True)
+                        print(
+                            f"RUN model={model} precision={precision} optimizer={optimizer} "
+                            f"global_batch={batch} micro_batch={micro_batch} "
+                            f"accumulation_steps={accumulation_steps}",
+                            flush=True,
+                        )
                         result = run_one(
                             root, args.output_dir, args, model, precision, optimizer, batch
                         )
                         print(
                             f"RESULT model={model} precision={precision} optimizer={optimizer} "
-                            f"batch={batch} status={result['status']} "
+                            f"global_batch={batch} micro_batch={micro_batch} "
+                            f"accumulation_steps={accumulation_steps} status={result['status']} "
                             f"mean_step_ms={result.get('mean_step_ms')}",
                             flush=True,
                         )
                         if result["status"] == "oom":
-                            stop_after_oom = True
+                            oom_micro_batch = micro_batch
                     results_by_key[key] = result
                     write_summary(
                         args.output_dir,

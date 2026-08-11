@@ -43,6 +43,8 @@ for result in results:
         result["precision"],
         result["optimizer"],
         result["batch_size"],
+        result.get("micro_batch_size", result["batch_size"]),
+        result.get("gradient_accumulation_steps", 1),
         result["status"],
         result.get("mean_step_ms"),
     )
