@@ -10,3 +10,11 @@ fi
 log=$(ls -1t "${logs[@]}" | head -1)
 echo "LOG=$log"
 tail -n 300 "$log"
+
+output_dir=${BENCHMARK_OUTPUT_DIR:-/home/jovyan/hmoe-cloud/step-time}
+config_logs=("$output_dir"/logs/*.log)
+if (( ${#config_logs[@]} > 0 )); then
+    config_log=$(ls -1t "${config_logs[@]}" | head -1)
+    echo "CONFIG_LOG=$config_log"
+    tail -n 300 "$config_log"
+fi
