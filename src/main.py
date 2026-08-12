@@ -463,6 +463,7 @@ def main(args):
             adamw_eps=1e-8,
             total_steps=args.iterations,
             warmup_steps=args.warmup_steps,
+            qargs=args.qargs if args.fp8_optim else None,
             **lite_kwargs,
         )
     elif args.opt in ("loro", "loro_adpt"):

@@ -14,7 +14,7 @@ from .memory_efficient.slim_adam import DEFAULT_LAYER_MAP_PATH as SLIM_ADAM_DEFA
 from .memory_efficient.lora import LoRAOptimizer
 from .memory_efficient.lora_rite import LoRARiteOptimizer
 from .memory_efficient.loro import LOROAdamW
-from .sota_opt import AdEMAMix, dion, Adan, ADOPT, SOAP, MARS, MARS_M, SWAN, DistributedShampoo
+from .sota_opt import AdEMAMix, FP8AdEMAMix, dion, Adan, ADOPT, SOAP, MARS, MARS_M, SWAN, DistributedShampoo
 from .multi_optimizer import MultiOptimizer
 
 
@@ -123,8 +123,8 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
     elif optimizer_name == "adamw":
         optimizer = torch.optim.AdamW(param_groups, betas=(args.beta1, args.beta2), lr=args.lr, weight_decay=args.weight_decay, eps=args.eps)#, foreach=False, fused=False)
     elif optimizer_name == "ademamix":
-        optimizer = AdEMAMix(
-            param_groups,
+        optimizer_cls = FP8AdEMAMix if getattr(args, "fp8_optim", False) else AdEMAMix
+        optimizer_kwargs = dict(
             lr=args.lr,
             betas=(args.beta1, args.beta2, args.ademamix_beta3),
             alpha=args.ademamix_alpha,
@@ -133,6 +133,12 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             eps=args.eps,
             weight_decay=args.weight_decay,
         )
+        if optimizer_cls is FP8AdEMAMix:
+            if qargs is None:
+                raise ValueError("FP8AdEMAMix requires qargs from --fp8-optim.")
+            optimizer = optimizer_cls(param_groups, qargs=qargs, **optimizer_kwargs)
+        else:
+            optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
     elif optimizer_name == "muon":
         for group in param_groups:
             if not group.get("is_proj_params", False):

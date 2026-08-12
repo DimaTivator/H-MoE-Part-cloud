@@ -3,6 +3,13 @@ import torch
 from itertools import repeat
 from loguru import logger
 
+from optim.fp8_state import (
+    FP8StateDictMixin,
+    dequantize_fp8_state,
+    init_fp8_state,
+    quantize_fp8_state_,
+)
+
 
 __all__ = ["MuonLite"]
 
@@ -163,7 +170,7 @@ def _classify_param(name):
     return None, 0
 
 
-class MuonLite(torch.optim.Optimizer):
+class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
     """MuonLite — Muon optimizer with LITE flat-direction acceleration.
 
     2D weight matrices (except embeddings/lm_head) use Muon + LITE.
@@ -192,6 +199,7 @@ class MuonLite(torch.optim.Optimizer):
         total_steps: int = 10000,
         warmup_steps: int = 1000,
         min_lr_ratio: float = 0.1,
+        qargs=None,
     ):
         defaults = dict(
             lr=lr,
@@ -217,6 +225,7 @@ class MuonLite(torch.optim.Optimizer):
         self.adamw_theta = adamw_betas[0]
         self.adamw_b2 = adamw_betas[1]
         self.smooth_ratio = 0.1
+        self.qargs = qargs
         # T_f: fraction of post-warmup period for flat ramp-up (cosine schedule)
         self.T_f = 0.5
         self.iter = 0
@@ -339,7 +348,10 @@ class MuonLite(torch.optim.Optimizer):
                 if "step" not in state:
                     state["step"] = 0
                     state["subspace_threshold_ratio"] = 1.0 / math.sqrt(min(m, n))
-                    state["momentum"] = torch.zeros_like(g)
+                    if self.qargs is None:
+                        state["momentum"] = torch.zeros_like(g)
+                    else:
+                        init_fp8_state(state, "momentum", g, self.qargs, order="first")
 
                 k = int(state["subspace_ratio"] * min(m, n)) + 1
                 k = min(k, min(m, n) - 1)
@@ -347,8 +359,18 @@ class MuonLite(torch.optim.Optimizer):
                 lr_times = self.get_lr_ratio(state["lr_ratio"], state["flat_warmup"])
 
                 # Nesterov momentum
-                state["momentum"] = state["momentum"] * muon_theta + g * (1 - muon_theta)
-                M = state["momentum"] + g * (1 - muon_theta) / muon_theta
+                momentum = (
+                    state["momentum"]
+                    if self.qargs is None
+                    else dequantize_fp8_state(
+                        state,
+                        "momentum",
+                        self.qargs,
+                        signed=True,
+                    )
+                )
+                momentum = momentum * muon_theta + g * (1 - muon_theta)
+                M = momentum + g * (1 - muon_theta) / muon_theta
 
                 m_ns = zeropower_via_newtonschulz5(M, ns_steps)
 
@@ -389,6 +411,16 @@ class MuonLite(torch.optim.Optimizer):
                 p.data.mul_(1 - lr * wd)
                 p.data.add_(flat_data_wd, alpha=-lr * wd2)
                 p.data.add_(update, alpha=-0.2 * lr * math.sqrt(max(m, n)))
+                if self.qargs is None:
+                    state["momentum"] = momentum
+                else:
+                    quantize_fp8_state_(
+                        state,
+                        "momentum",
+                        momentum,
+                        self.qargs,
+                        signed=True,
+                    )
 
             # ── Vanilla Muon params (2D, no LITE) ──
             for p in group["params"]:
@@ -404,10 +436,23 @@ class MuonLite(torch.optim.Optimizer):
                     state["step"] = 0
 
                 if "momentum" not in state:
-                    state["momentum"] = torch.zeros_like(g)
+                    if self.qargs is None:
+                        state["momentum"] = torch.zeros_like(g)
+                    else:
+                        init_fp8_state(state, "momentum", g, self.qargs, order="first")
 
-                state["momentum"] = state["momentum"] * muon_theta + g * (1 - muon_theta)
-                M = state["momentum"] + g * (1 - muon_theta) / muon_theta
+                momentum = (
+                    state["momentum"]
+                    if self.qargs is None
+                    else dequantize_fp8_state(
+                        state,
+                        "momentum",
+                        self.qargs,
+                        signed=True,
+                    )
+                )
+                momentum = momentum * muon_theta + g * (1 - muon_theta)
+                M = momentum + g * (1 - muon_theta) / muon_theta
                 u = zeropower_via_newtonschulz5(M, ns_steps)
 
                 if state["step"] == 0:
@@ -416,6 +461,16 @@ class MuonLite(torch.optim.Optimizer):
                 state["step"] += 1
                 p.data.mul_(1 - lr * wd)
                 p.data.add_(u, alpha=-0.2 * lr * math.sqrt(max(m, n)))
+                if self.qargs is None:
+                    state["momentum"] = momentum
+                else:
+                    quantize_fp8_state_(
+                        state,
+                        "momentum",
+                        momentum,
+                        self.qargs,
+                        signed=True,
+                    )
 
             # ── AdamW params (emb, out, norm, fallback) ──
             eps = group["adamw_eps"]
@@ -432,8 +487,12 @@ class MuonLite(torch.optim.Optimizer):
 
                 if "step" not in state:
                     state["step"] = 0
-                    state["moment1"] = torch.zeros_like(g)
-                    state["moment2"] = torch.zeros_like(g)
+                    if self.qargs is None:
+                        state["moment1"] = torch.zeros_like(g)
+                        state["moment2"] = torch.zeros_like(g)
+                    else:
+                        init_fp8_state(state, "moment1", g, self.qargs, order="first")
+                        init_fp8_state(state, "moment2", g, self.qargs, order="second")
                     state["upper_topk_ratio"] = 1.0
                     state["lower_topk_ratio"] = 0.5
 
@@ -443,15 +502,31 @@ class MuonLite(torch.optim.Optimizer):
                         f"lr_ratio={state['lr_ratio']}"
                     )
 
-                state["moment1"] = adam_theta * state["moment1"] + (1 - adam_theta) * g
-                state["moment2"] = state["moment2"] * adam_b2 + (g ** 2) * (1 - adam_b2)
+                if self.qargs is None:
+                    moment1 = state["moment1"]
+                    moment2 = state["moment2"]
+                else:
+                    moment1 = dequantize_fp8_state(
+                        state,
+                        "moment1",
+                        self.qargs,
+                        signed=True,
+                    )
+                    moment2 = dequantize_fp8_state(
+                        state,
+                        "moment2",
+                        self.qargs,
+                        signed=False,
+                    )
+                moment1 = adam_theta * moment1 + (1 - adam_theta) * g
+                moment2 = moment2 * adam_b2 + (g ** 2) * (1 - adam_b2)
 
                 lr_times = self.get_lr_ratio(state["lr_ratio"], state["flat_warmup"])
 
                 smooth_ratio = min(1.0 - state["subspace_ratio"], self.smooth_ratio)
 
                 new_upper, new_lower, state_p = rank_v(
-                    state["moment2"], state["upper_topk_ratio"], state["lower_topk_ratio"],
+                    moment2, state["upper_topk_ratio"], state["lower_topk_ratio"],
                 )
 
                 # Dynamic threshold adjustment for AdamW subspace detection
@@ -473,7 +548,7 @@ class MuonLite(torch.optim.Optimizer):
                 elif state["subspace_ratio"] > 1.0 - 1e-5:
                     state_p = torch.ones_like(g)
 
-                update = state["moment1"] / (state["moment2"].sqrt() + eps)
+                update = moment1 / (moment2.sqrt() + eps)
                 bias_correction1 = 1 - adam_theta ** (state["step"] + 1)
                 bias_correction2 = 1 - adam_b2 ** (state["step"] + 1)
                 scale = bias_correction1 / bias_correction2 ** 0.5
@@ -489,6 +564,24 @@ class MuonLite(torch.optim.Optimizer):
 
                 p.data.add_(update, alpha=-lr / scale)
                 state["step"] += 1
+                if self.qargs is None:
+                    state["moment1"] = moment1
+                    state["moment2"] = moment2
+                else:
+                    quantize_fp8_state_(
+                        state,
+                        "moment1",
+                        moment1,
+                        self.qargs,
+                        signed=True,
+                    )
+                    quantize_fp8_state_(
+                        state,
+                        "moment2",
+                        moment2,
+                        self.qargs,
+                        signed=False,
+                    )
 
         self.iter += 1
         return loss
