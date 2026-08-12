@@ -40,13 +40,35 @@ if [[ "${MODE}" == "inspect" ]]; then
     exit 0
 fi
 
-python -m pip install --user --disable-pip-version-check -r scripts/cloud/requirements.txt
+SYSTEM_PYTHON=${SYSTEM_PYTHON:-python}
+TORCH_VENV=${TORCH_VENV:-/home/jovyan/hmoe-cloud/torch251-cu121}
+
+"${SYSTEM_PYTHON}" -m pip install --user --disable-pip-version-check -r scripts/cloud/requirements.txt
+USER_SITE=$("${SYSTEM_PYTHON}" -c 'import site; print(site.getusersitepackages())')
+export PYTHONPATH="${USER_SITE}:${PYTHONPATH:-}"
+
+if [[ ! -x "${TORCH_VENV}/bin/python" || ! -x "${TORCH_VENV}/bin/torchrun" ]]; then
+    echo "Required persistent Torch environment is missing: ${TORCH_VENV}" >&2
+    echo "Bootstrap torch==2.5.1+cu121 there before launching this job." >&2
+    exit 3
+fi
+
+PYTHON_BIN="${TORCH_VENV}/bin/python"
+TORCHRUN_BIN="${TORCH_VENV}/bin/torchrun"
+"${PYTHON_BIN}" - <<'PY'
+import torch
+from packaging.version import Version
+
+version = torch.__version__.split("+")[0]
+assert Version(version) >= Version("2.5"), torch.__version__
+print("selected_torch", torch.__version__, "cuda", torch.version.cuda)
+PY
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 if [[ "${MODE}" == "probe" ]]; then
-    python - <<'PY'
+    "${PYTHON_BIN}" - <<'PY'
 import sys
 sys.path.insert(0, "src")
 import torch
@@ -86,7 +108,7 @@ PY
 fi
 
 if [[ "${MODE}" == "data" ]]; then
-    python scripts/cloud/download_fineweb_subset.py \
+    "${PYTHON_BIN}" scripts/cloud/download_fineweb_subset.py \
         --destination "${DATASETS_DIR}" \
         --manifest scripts/cloud/fineweb_subset_16.txt
     exit 0
@@ -112,7 +134,7 @@ if [[ "${MODE}" == "cpu_smoke" ]]; then
     CHECKPOINT_ARGS=(--latest-ckpt-interval 0)
     EVAL_ARGS=()
     WANDB_ARGS=()
-    LAUNCH=(python src/main.py)
+    LAUNCH=("${PYTHON_BIN}" src/main.py)
     BACKEND_ARGS=(--device cpu)
 elif [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_cloud_smoke"
@@ -130,7 +152,7 @@ elif [[ "${MODE}" == "smoke" ]]; then
     CHECKPOINT_ARGS=(--latest-ckpt-interval 0)
     EVAL_ARGS=()
     WANDB_ARGS=()
-    LAUNCH=(torchrun --standalone --nproc_per_node=1 src/main.py)
+    LAUNCH=("${TORCHRUN_BIN}" --standalone --nproc_per_node=1 src/main.py)
     BACKEND_ARGS=(--distributed-backend nccl)
 else
     EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
@@ -165,7 +187,7 @@ else
         --wandb-group 1xChinchilla_optimizer_fp8_cloud
         --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 "${OPTIMIZER}"
     )
-    LAUNCH=(torchrun --standalone --nproc_per_node=1 src/main.py)
+    LAUNCH=("${TORCHRUN_BIN}" --standalone --nproc_per_node=1 src/main.py)
     BACKEND_ARGS=(--distributed-backend nccl)
 fi
 
