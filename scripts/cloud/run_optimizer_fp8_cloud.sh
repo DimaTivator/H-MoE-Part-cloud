@@ -71,24 +71,52 @@ test -f "${DATASETS_DIR}/.subset_complete"
 count=$(find "${DATASETS_DIR}" -maxdepth 1 -type f -name '*.parquet' | wc -l | tr -d ' ')
 test "${count}" = "16"
 
-if [[ "${MODE}" == "smoke" ]]; then
+if [[ "${MODE}" == "cpu_smoke" ]]; then
+    EXPERIMENT_NAME="tiny_${OPTIMIZER}_optimizer_fp8_cloud_cpu_smoke"
+    ITERATIONS=2
+    WARMUP=1
+    BATCH_SIZE=1
+    ACC_STEPS=1
+    SEQ_LEN=128
+    N_LAYER=2
+    N_EMBD=128
+    N_HEAD=4
+    EVAL_INTERVAL=2
+    EVAL_BATCHES=1
+    LOG_INTERVAL=1
+    CHECKPOINT_ARGS=(--latest-ckpt-interval 0)
+    EVAL_ARGS=()
+    WANDB_ARGS=()
+    LAUNCH=(python src/main.py)
+    BACKEND_ARGS=(--device cpu)
+elif [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_cloud_smoke"
     ITERATIONS=3
     WARMUP=1
     BATCH_SIZE=${BATCH_SIZE:-32}
     ACC_STEPS=1
+    SEQ_LEN=1024
+    N_LAYER=18
+    N_EMBD=1280
+    N_HEAD=20
     EVAL_INTERVAL=3
     EVAL_BATCHES=1
     LOG_INTERVAL=1
     CHECKPOINT_ARGS=(--latest-ckpt-interval 0)
     EVAL_ARGS=()
     WANDB_ARGS=()
+    LAUNCH=(torchrun --standalone --nproc_per_node=1 src/main.py)
+    BACKEND_ARGS=(--distributed-backend nccl)
 else
     EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
     ITERATIONS=75457
     WARMUP=2000
     BATCH_SIZE=${BATCH_SIZE:-32}
     ACC_STEPS=${ACC_STEPS:-4}
+    SEQ_LEN=1024
+    N_LAYER=18
+    N_EMBD=1280
+    N_HEAD=20
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
     LOG_INTERVAL=50
@@ -112,6 +140,8 @@ else
         --wandb-group 1xChinchilla_optimizer_fp8_cloud
         --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 "${OPTIMIZER}"
     )
+    LAUNCH=(torchrun --standalone --nproc_per_node=1 src/main.py)
+    BACKEND_ARGS=(--distributed-backend nccl)
 fi
 
 OPT_ARGS=()
@@ -132,19 +162,19 @@ else
 fi
 
 export WANDB_PROJECT WANDB_ENTITY WANDB_BASE_URL
-torchrun --standalone --nproc_per_node=1 src/main.py \
-    --distributed-backend nccl \
+"${LAUNCH[@]}" \
+    "${BACKEND_ARGS[@]}" \
     --experiment-name "${EXPERIMENT_NAME}" \
     --dataset fineweb \
     --datasets-dir "${DATASETS_DIR}" \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
-    --sequence-length 1024 \
+    --sequence-length "${SEQ_LEN}" \
     --streaming \
     --workers 8 \
     --model llama \
-    --n-layer 18 \
-    --n-embd 1280 \
-    --n-head 20 \
+    --n-layer "${N_LAYER}" \
+    --n-embd "${N_EMBD}" \
+    --n-head "${N_HEAD}" \
     --multiple-of 256 \
     --dtype bfloat16 \
     "${OPT_ARGS[@]}" \
