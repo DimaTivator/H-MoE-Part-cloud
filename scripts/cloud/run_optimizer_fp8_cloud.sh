@@ -79,7 +79,9 @@ if [[ "${MODE}" == "smoke" ]]; then
     ACC_STEPS=1
     EVAL_INTERVAL=3
     EVAL_BATCHES=1
+    LOG_INTERVAL=1
     CHECKPOINT_ARGS=(--latest-ckpt-interval 0)
+    EVAL_ARGS=()
     WANDB_ARGS=()
 else
     EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
@@ -89,6 +91,15 @@ else
     ACC_STEPS=${ACC_STEPS:-4}
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
+    LOG_INTERVAL=50
+    EVAL_ARGS=(
+        --downstream-eval-enabled
+        --downstream-eval-interval 2000
+        --downstream-task-group basic_v2
+        --lm-eval-enabled
+        --lm-eval-interval 2000
+        --lm-eval-datasets wikitext103
+    )
     CHECKPOINT_ARGS=(
         --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
         --latest-ckpt-interval 10000
@@ -152,7 +163,8 @@ torchrun --standalone --nproc_per_node=1 src/main.py \
     --fp8-expansion expand \
     --eval-interval "${EVAL_INTERVAL}" \
     --eval-batches "${EVAL_BATCHES}" \
-    --log-interval 1 \
+    "${EVAL_ARGS[@]}" \
+    --log-interval "${LOG_INTERVAL}" \
     "${CHECKPOINT_ARGS[@]}" \
     --results-base-folder "${RESULTS_DIR}" \
     "${WANDB_ARGS[@]}"
