@@ -29,6 +29,17 @@ echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
 
+if [[ "${MODE}" == "inspect" ]]; then
+    du -sh "${DATASETS_DIR}" 2>&1 || true
+    find "${DATASETS_DIR}" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort
+    find "${LOG_DIR}" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 5
+    latest_log=$(find "${LOG_DIR}" -maxdepth 1 -type f -name '*.log' -print 2>/dev/null | sort | tail -n 1)
+    if [[ -n "${latest_log}" ]]; then
+        tail -n 120 "${latest_log}"
+    fi
+    exit 0
+fi
+
 python -m pip install --user --disable-pip-version-check -r scripts/cloud/requirements.txt
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
