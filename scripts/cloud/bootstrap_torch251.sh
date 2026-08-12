@@ -17,7 +17,7 @@ finish() {
 trap finish EXIT
 
 echo "Recreating ${TORCH_VENV} after the previous incomplete 11 MB bootstrap."
-python -m venv --clear "${TORCH_VENV}"
+python -m venv --clear --system-site-packages "${TORCH_VENV}"
 "${TORCH_VENV}/bin/python" -m pip install --upgrade pip
 "${TORCH_VENV}/bin/python" -m pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu121 \

@@ -53,6 +53,11 @@ if [[ ! -x "${TORCH_VENV}/bin/python" || ! -x "${TORCH_VENV}/bin/torchrun" ]]; t
     exit 3
 fi
 
+if grep -q '^include-system-site-packages = false$' "${TORCH_VENV}/pyvenv.cfg"; then
+    echo "Enabling base-image packages in ${TORCH_VENV}; the venv Torch remains first on sys.path."
+    "${SYSTEM_PYTHON}" -m venv --upgrade --system-site-packages "${TORCH_VENV}"
+fi
+
 PYTHON_BIN="${TORCH_VENV}/bin/python"
 TORCHRUN_BIN="${TORCH_VENV}/bin/torchrun"
 "${PYTHON_BIN}" - <<'PY'
