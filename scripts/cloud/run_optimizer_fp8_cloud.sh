@@ -48,14 +48,39 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 if [[ "${MODE}" == "probe" ]]; then
     python - <<'PY'
 import sys
+sys.path.insert(0, "src")
 import torch
 import pyarrow
 import tiktoken
 import wandb
+from types import SimpleNamespace
+from optim.fp8_state import (
+    dequantize_fp8_state,
+    init_fp8_state,
+    quantize_fp8_state_,
+)
+from optim.sota_opt.fp8_ademamix import FP8AdEMAMix
+from third_party.lite.muonlite import MuonLite
 print("python", sys.version)
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available())
 print("float8", torch.float8_e4m3fn, torch.float8_e5m2)
 print("pyarrow", pyarrow.__version__, "tiktoken", tiktoken.__version__, "wandb", wandb.__version__)
+qargs = SimpleNamespace(
+    first_order_bit="E4M3",
+    second_order_bit="E4M3",
+    first_order_expansion="expand",
+    second_order_expansion="expand",
+    qgroup_size=128,
+    expand_min=16,
+)
+source = torch.linspace(-1, 1, 257)
+state = {}
+init_fp8_state(state, "momentum", source, qargs, order="first")
+quantize_fp8_state_(state, "momentum", source, qargs, signed=True)
+restored = dequantize_fp8_state(state, "momentum", qargs, signed=True)
+assert restored.shape == source.shape and torch.isfinite(restored).all()
+print("fp8_state_smoke_mae", float((source - restored).abs().mean()))
+print("optimizer_imports", MuonLite.__name__, FP8AdEMAMix.__name__)
 PY
     exit 0
 fi
