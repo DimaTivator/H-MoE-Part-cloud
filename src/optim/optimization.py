@@ -232,6 +232,10 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             decouple=args.adopt_decouple
         )
     elif optimizer_name == "shampoo":
+        if DistributedShampoo is None:
+            raise ImportError(
+                "The optional distributed_shampoo package is required for --opt shampoo."
+            )
         optimizer = DistributedShampoo(
             param_groups,
             lr=args.lr,
