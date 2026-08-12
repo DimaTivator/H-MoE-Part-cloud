@@ -32,6 +32,29 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=
 if [[ "${MODE}" == "inspect" ]]; then
     du -sh "${DATASETS_DIR}" 2>&1 || true
     find "${DATASETS_DIR}" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort
+    EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
+    EXPERIMENT_DIR="${RESULTS_DIR}/${EXPERIMENT_NAME}"
+    echo "EXPERIMENT_DIR=${EXPERIMENT_DIR}"
+    find "${EXPERIMENT_DIR}/ckpts" -maxdepth 2 -type f \
+        -printf '%T@ %s %p\n' 2>/dev/null | sort -n || true
+    if [[ -f "${EXPERIMENT_DIR}/ckpts/latest/main.pt" && \
+          -x /home/jovyan/hmoe-cloud/torch251-cu121/bin/python ]]; then
+        CHECKPOINT_PATH="${EXPERIMENT_DIR}/ckpts/latest/main.pt" \
+            /home/jovyan/hmoe-cloud/torch251-cu121/bin/python - <<'PY'
+import os
+from pathlib import Path
+
+import torch
+
+path = Path(os.environ["CHECKPOINT_PATH"])
+checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+print(f"LATEST_CHECKPOINT={path}")
+print(f"LATEST_CHECKPOINT_ITER={checkpoint.get('itr')}")
+print(f"LATEST_CHECKPOINT_BYTES={path.stat().st_size}")
+PY
+    else
+        echo "LATEST_CHECKPOINT=missing"
+    fi
     find "${LOG_DIR}" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n 5
     latest_log=$(find "${LOG_DIR}" -maxdepth 1 -type f -name '*.log' -print 2>/dev/null | sort | tail -n 1)
     if [[ -n "${latest_log}" ]]; then
