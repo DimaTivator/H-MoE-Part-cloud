@@ -78,6 +78,7 @@ def parse_args():
     parser.add_argument("--warmup-steps", type=int, default=10)
     parser.add_argument("--measure-steps", type=int, default=50)
     parser.add_argument("--muon-use-syrk", action="store_true")
+    parser.add_argument("--muon-batched-newton-schulz", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument(
         "--output-dir",
@@ -96,6 +97,8 @@ def parse_args():
         parser.error("micro batch size must be positive")
     if args.data_parallel_size < 1:
         parser.error("data parallel size must be positive")
+    if args.muon_use_syrk and args.muon_batched_newton_schulz:
+        parser.error("--muon-use-syrk and --muon-batched-newton-schulz are mutually exclusive")
     for batch in args.batches:
         try:
             batch_layout(batch, args.micro_batch_size, args.data_parallel_size)
@@ -140,7 +143,8 @@ def build_command(
     data_parallel_size,
     warmup,
     measured,
-    muon_use_syrk,
+    muon_use_syrk=False,
+    muon_batched_newton_schulz=False,
 ):
     model = MODELS[model_name]
     total_steps = warmup + measured
@@ -266,6 +270,8 @@ def build_command(
         )
     if optimizer == "muon" and muon_use_syrk:
         command.append("--muon-use-syrk")
+    if optimizer == "muon" and muon_batched_newton_schulz:
+        command.append("--muon-batched-newton-schulz")
     return command
 
 
@@ -349,6 +355,7 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         args.warmup_steps,
         args.measure_steps,
         args.muon_use_syrk,
+        args.muon_batched_newton_schulz,
     )
     env = os.environ.copy()
     source_paths = [
@@ -450,6 +457,7 @@ def main():
             "micro_batch_size_cap": args.micro_batch_size,
             "data_parallel_size": args.data_parallel_size,
             "muon_use_syrk": args.muon_use_syrk,
+            "muon_batched_newton_schulz": args.muon_batched_newton_schulz,
             "git_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),

@@ -285,6 +285,9 @@ class OptimizerConfig:
     muon_use_syrk: bool = False
     """Use the Triton SYRK kernel for the Gram matrix in Newton-Schulz iteration."""
 
+    muon_batched_newton_schulz: bool = False
+    """Batch equal-shaped Muon matrices into 3D Newton-Schulz operations."""
+
     muon_extra_scale_factor: float = 1.0
     """Additional scale factor for the muon update."""
 
