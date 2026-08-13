@@ -77,6 +77,7 @@ def parse_args():
     parser.add_argument("--data-parallel-size", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=10)
     parser.add_argument("--measure-steps", type=int, default=50)
+    parser.add_argument("--muon-use-syrk", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument(
         "--output-dir",
@@ -139,6 +140,7 @@ def build_command(
     data_parallel_size,
     warmup,
     measured,
+    muon_use_syrk,
 ):
     model = MODELS[model_name]
     total_steps = warmup + measured
@@ -262,6 +264,8 @@ def build_command(
                 "most_recent",
             ]
         )
+    if optimizer == "muon" and muon_use_syrk:
+        command.append("--muon-use-syrk")
     return command
 
 
@@ -344,6 +348,7 @@ def run_one(root, output_dir, args, model, precision, optimizer, batch):
         args.data_parallel_size,
         args.warmup_steps,
         args.measure_steps,
+        args.muon_use_syrk,
     )
     env = os.environ.copy()
     source_paths = [
@@ -444,6 +449,7 @@ def main():
             "sequence_length": 1024,
             "micro_batch_size_cap": args.micro_batch_size,
             "data_parallel_size": args.data_parallel_size,
+            "muon_use_syrk": args.muon_use_syrk,
             "git_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
