@@ -11,6 +11,7 @@ LOG_DIR=${LOG_DIR:-/home/jovyan/logs/optimizer_fp8_cloud}
 WANDB_PROJECT=${WANDB_PROJECT:-fp8-pretrain}
 WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
+WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
 LOG_FILE="${LOG_DIR}/${OPTIMIZER}_${MODE}_$(date +%Y%m%d_%H%M%S).log"
@@ -33,8 +34,8 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=
 if [[ "${MODE}" == "inspect" ]]; then
     du -sh "${DATASETS_DIR}" 2>&1 || true
     find "${DATASETS_DIR}" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort
-    EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
-    EXPERIMENT_DIR="${RESULTS_DIR}/${EXPERIMENT_NAME}"
+    EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
+    EXPERIMENT_DIR="${RESULTS_DIR}/${WANDB_GROUP}/${EXPERIMENT_NAME}"
     echo "EXPERIMENT_DIR=${EXPERIMENT_DIR}"
     find "${EXPERIMENT_DIR}/ckpts" -maxdepth 2 -type f \
         -printf '%T@ %s %p\n' 2>/dev/null | sort -n || true
@@ -66,9 +67,9 @@ fi
 
 if [[ "${MODE}" == "reset_checkpoints" ]]; then
     EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
-    CHECKPOINT_DIR="${RESULTS_DIR}/${EXPERIMENT_NAME}/ckpts"
+    CHECKPOINT_DIR="${RESULTS_DIR}/${WANDB_GROUP}/${EXPERIMENT_NAME}/ckpts"
     case "${CHECKPOINT_DIR}" in
-        "${RESULTS_DIR}"/500m_*_optimizer_fp8_1xC_cloud_h100/ckpts) ;;
+        "${RESULTS_DIR}"/"${WANDB_GROUP}"/500m_*_1xC_cloud_h100/ckpts) ;;
         *)
             echo "Refusing unsafe checkpoint reset: ${CHECKPOINT_DIR}" >&2
             exit 4
@@ -232,7 +233,7 @@ else
     WANDB_ARGS=(
         --wandb
         --wandb-project "${WANDB_PROJECT}"
-        --wandb-group 1xChinchilla_optimizer_fp8_cloud
+        --wandb-group "${WANDB_GROUP}"
         --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 "${OPTIMIZER}"
     )
     LAUNCH=("${TORCHRUN_BIN}" --standalone --nproc_per_node=1 src/main.py)
