@@ -3,6 +3,7 @@ set -uo pipefail
 
 MODE=${MODE:-probe}
 OPTIMIZER=${OPTIMIZER:-muon}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
 RESULTS_DIR=${RESULTS_DIR:-/home/jovyan/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
@@ -24,7 +25,7 @@ finish() {
 }
 trap finish EXIT
 
-echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER}"
+echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} WEIGHT_DECAY=${WEIGHT_DECAY}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
@@ -60,6 +61,25 @@ PY
     if [[ -n "${latest_log}" ]]; then
         tail -n 120 "${latest_log}"
     fi
+    exit 0
+fi
+
+if [[ "${MODE}" == "reset_checkpoints" ]]; then
+    EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
+    CHECKPOINT_DIR="${RESULTS_DIR}/${EXPERIMENT_NAME}/ckpts"
+    case "${CHECKPOINT_DIR}" in
+        "${RESULTS_DIR}"/500m_*_optimizer_fp8_1xC_cloud_h100/ckpts) ;;
+        *)
+            echo "Refusing unsafe checkpoint reset: ${CHECKPOINT_DIR}" >&2
+            exit 4
+            ;;
+    esac
+    if [[ -d "${CHECKPOINT_DIR}" ]]; then
+        find "${CHECKPOINT_DIR}" -maxdepth 2 -type f -printf '%s %p\n' 2>/dev/null | sort || true
+        rm -rf -- "${CHECKPOINT_DIR}"
+    fi
+    test ! -e "${CHECKPOINT_DIR}"
+    echo "RESET_CHECKPOINT_DIR=${CHECKPOINT_DIR}"
     exit 0
 fi
 
@@ -183,7 +203,7 @@ elif [[ "${MODE}" == "smoke" ]]; then
     LAUNCH=("${TORCHRUN_BIN}" --standalone --nproc_per_node=1 src/main.py)
     BACKEND_ARGS=(--distributed-backend nccl)
 else
-    EXPERIMENT_NAME="500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100"
+    EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
     ITERATIONS=75457
     WARMUP=2000
     BATCH_SIZE=${BATCH_SIZE:-32}
@@ -221,10 +241,10 @@ fi
 
 OPT_ARGS=()
 if [[ "${OPTIMIZER}" == "muon" ]]; then
-    OPT_ARGS=(--opt muon --lr 1e-3 --weight-decay 0.1 --beta1 0.9 --beta2 0.99 --grad-clip 1.0)
+    OPT_ARGS=(--opt muon --lr 1e-3 --weight-decay "${WEIGHT_DECAY}" --beta1 0.9 --beta2 0.99 --grad-clip 1.0)
 elif [[ "${OPTIMIZER}" == "ademamix" ]]; then
     OPT_ARGS=(
-        --opt ademamix --lr 1e-3 --weight-decay 0.1
+        --opt ademamix --lr 1e-3 --weight-decay "${WEIGHT_DECAY}"
         --beta1 0.9 --beta2 0.999
         --ademamix_beta3 0.9999 --ademamix_alpha 8
         --ademamix_beta3_warmup_steps "${ITERATIONS}"
