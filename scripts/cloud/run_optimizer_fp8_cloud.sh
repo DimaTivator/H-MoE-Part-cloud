@@ -4,6 +4,9 @@ set -uo pipefail
 MODE=${MODE:-probe}
 OPTIMIZER=${OPTIMIZER:-muon}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
+GRAD_CLIP=${GRAD_CLIP:-}
+CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
+LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
 DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
 RESULTS_DIR=${RESULTS_DIR:-/home/jovyan/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
@@ -26,7 +29,7 @@ finish() {
 }
 trap finish EXIT
 
-echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} WEIGHT_DECAY=${WEIGHT_DECAY}"
+echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} WEIGHT_DECAY=${WEIGHT_DECAY} GRAD_CLIP=${GRAD_CLIP:-optimizer_default} CHECKPOINT_MODE=${CHECKPOINT_MODE}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
@@ -224,12 +227,23 @@ else
         --lm-eval-interval 2000
         --lm-eval-datasets wikitext103
     )
-    CHECKPOINT_ARGS=(
-        --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
-        --latest-ckpt-interval 10000
-        --upload-inter-ckpts-to wandb
-        --delete-local-inter-ckpts-after-upload
-    )
+    if [[ "${CHECKPOINT_MODE}" == "milestones" ]]; then
+        CHECKPOINT_ARGS=(
+            --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
+            --latest-ckpt-interval "${LATEST_CKPT_INTERVAL}"
+            --upload-inter-ckpts-to wandb
+            --delete-local-inter-ckpts-after-upload
+        )
+    elif [[ "${CHECKPOINT_MODE}" == "latest" ]]; then
+        if (( LATEST_CKPT_INTERVAL <= 0 )); then
+            echo "CHECKPOINT_MODE=latest requires LATEST_CKPT_INTERVAL > 0" >&2
+            exit 2
+        fi
+        CHECKPOINT_ARGS=(--latest-ckpt-interval "${LATEST_CKPT_INTERVAL}")
+    else
+        echo "Unsupported CHECKPOINT_MODE=${CHECKPOINT_MODE}" >&2
+        exit 2
+    fi
     WANDB_ARGS=(
         --wandb
         --wandb-project "${WANDB_PROJECT}"
@@ -242,7 +256,7 @@ fi
 
 OPT_ARGS=()
 if [[ "${OPTIMIZER}" == "muon" ]]; then
-    OPT_ARGS=(--opt muon --lr 1e-3 --weight-decay "${WEIGHT_DECAY}" --beta1 0.9 --beta2 0.99 --grad-clip 1.0)
+    OPT_ARGS=(--opt muon --lr 1e-3 --weight-decay "${WEIGHT_DECAY}" --beta1 0.9 --beta2 0.99 --grad-clip "${GRAD_CLIP:-1.0}")
 elif [[ "${OPTIMIZER}" == "ademamix" ]]; then
     OPT_ARGS=(
         --opt ademamix --lr 1e-3 --weight-decay "${WEIGHT_DECAY}"
@@ -250,7 +264,7 @@ elif [[ "${OPTIMIZER}" == "ademamix" ]]; then
         --ademamix_beta3 0.9999 --ademamix_alpha 8
         --ademamix_beta3_warmup_steps "${ITERATIONS}"
         --ademamix_alpha_warmup_steps "${ITERATIONS}"
-        --grad-clip 0.5
+        --grad-clip "${GRAD_CLIP:-0.5}"
     )
 else
     echo "Unsupported OPTIMIZER=${OPTIMIZER}" >&2
