@@ -1,0 +1,20 @@
+# Runtime delta for Cloud.ru's py3.12-torch2.8.0 image.
+# Torch, Triton, CUDA packages, nvcc, flash-attn and Transformer Engine are
+# deliberately omitted because the base image and the project's Triton FP8
+# path already provide everything required for current training scripts.
+
+ai2-olmo-eval==0.9.0
+bitsandbytes==0.49.2
+datasets==3.6.0
+huggingface-hub==1.8.0
+loguru==0.7.3
+pyarrow==19.0.1
+PyYAML==6.0.3
+schedulefree==1.4.1
+tensorly==0.9.0
+tiktoken==0.12.0
+torchao @ https://download.pytorch.org/whl/cu126/torchao-0.13.0%2Bcu126-cp39-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+transformers==5.4.0
+wandb==0.25.1
+
+torch-shampoo @ git+https://github.com/facebookresearch/optimizers.git@23b6ba547156ed5a3dd68a6f543e4858ed6ffbf6
