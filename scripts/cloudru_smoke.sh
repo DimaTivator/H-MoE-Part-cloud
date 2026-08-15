@@ -15,7 +15,7 @@ mkdir -p "$log_dir" /home/jovyan/datasets/efficient-training-smoke
     export TORCH_HOME=${TORCH_HOME:-/home/jovyan/.cache/torch}
     export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-/home/jovyan/.cache/triton}
 
-    if ! python -c 'import torchao, bitsandbytes, datasets, pyarrow, tensorly, tiktoken, transformers, wandb; from distributed_shampoo import DistributedShampoo'; then
+    if ! python -c 'import torchao, bitsandbytes, datasets, pyarrow, tensorly, tiktoken, transformers, wandb; from distributed_shampoo import DistributedShampoo; assert torchao.__version__.endswith("+cu128"), torchao.__version__'; then
         echo "Installing Cloud.ru runtime delta into the persistent user package cache"
         python -m pip install --user --upgrade-strategy only-if-needed -r requirements.cloudru.txt
     fi
@@ -54,8 +54,8 @@ PY
         --opt adamw
         --lr 1e-3
         --weight-decay 0.0
-        --scheduler cos
-        --warmup-steps 1
+        --scheduler none
+        --warmup-steps 0
         --iterations 2
         --batch-size 2
         --eval-batch-size 2
