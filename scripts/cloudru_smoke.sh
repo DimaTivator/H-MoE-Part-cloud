@@ -41,7 +41,6 @@ PY
     fi
 
     common_args=(
-        --distributed-backend single
         --dataset shakespeare-char
         --datasets-dir /home/jovyan/datasets/efficient-training-smoke
         --model llama
