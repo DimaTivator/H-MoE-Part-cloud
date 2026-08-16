@@ -112,6 +112,39 @@ if [[ "${MODE}" == "reset_checkpoints" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "cleanup_duplicate_fineweb" ]]; then
+    SOURCE_DIR=/home/jovyan/finewebedu_h200/sample/100BT
+    CANONICAL_DIR=/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards
+    test -d "${SOURCE_DIR}"
+    test -d "${CANONICAL_DIR}"
+
+    matched=0
+    while IFS= read -r -d '' source_file; do
+        filename=$(basename "${source_file}")
+        canonical_file="${CANONICAL_DIR}/${filename}"
+        test -f "${canonical_file}"
+        source_size=$(stat -c '%s' "${source_file}")
+        canonical_size=$(stat -c '%s' "${canonical_file}")
+        if [[ "${source_size}" != "${canonical_size}" ]]; then
+            echo "Refusing cleanup: size mismatch for ${filename}" >&2
+            exit 5
+        fi
+        echo "DUPLICATE=${filename} BYTES=${source_size}"
+        matched=$((matched + 1))
+    done < <(find "${SOURCE_DIR}" -maxdepth 1 -type f -name '*.parquet' -print0)
+
+    if (( matched == 0 )); then
+        echo "Refusing cleanup: no parquet files found in ${SOURCE_DIR}" >&2
+        exit 5
+    fi
+    echo "REMOVING_DUPLICATE_DIR=${SOURCE_DIR} FILES=${matched}"
+    rm -rf -- "${SOURCE_DIR}"
+    test ! -e "${SOURCE_DIR}"
+    rmdir /home/jovyan/finewebedu_h200/sample 2>/dev/null || true
+    df -h /home/jovyan
+    exit 0
+fi
+
 SYSTEM_PYTHON=${SYSTEM_PYTHON:-python}
 TORCH_VENV=${TORCH_VENV:-/home/jovyan/hmoe-cloud/torch251-cu121}
 
