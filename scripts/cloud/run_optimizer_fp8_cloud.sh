@@ -35,6 +35,8 @@ df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
 
 if [[ "${MODE}" == "inspect" ]]; then
+    echo "HOME_USAGE"
+    du -x -h --max-depth=1 /home/jovyan 2>/dev/null | sort -h || true
     du -sh "${DATASETS_DIR}" 2>&1 || true
     find "${DATASETS_DIR}" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort
     EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
