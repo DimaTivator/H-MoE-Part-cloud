@@ -1,5 +1,6 @@
 from .ademamix import AdEMAMix
 from .fp8_ademamix import FP8AdEMAMix
+from .fp8_soap import FP8SOAP
 # from .muon import Muon, DistributedMuon
 # from .rmsprop import RMSpropW
 from .adopt import ADOPT

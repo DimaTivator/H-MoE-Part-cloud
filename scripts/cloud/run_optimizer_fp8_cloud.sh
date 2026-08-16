@@ -134,6 +134,7 @@ from optim.fp8_state import (
     quantize_fp8_state_,
 )
 from optim.sota_opt.fp8_ademamix import FP8AdEMAMix
+from optim.sota_opt.fp8_soap import FP8SOAP
 from third_party.lite.muonlite import MuonLite
 print("python", sys.version)
 print("torch", torch.__version__, "cuda", torch.version.cuda, "available", torch.cuda.is_available())
@@ -154,7 +155,26 @@ quantize_fp8_state_(state, "momentum", source, qargs, signed=True)
 restored = dequantize_fp8_state(state, "momentum", qargs, signed=True)
 assert restored.shape == source.shape and torch.isfinite(restored).all()
 print("fp8_state_smoke_mae", float((source - restored).abs().mean()))
-print("optimizer_imports", MuonLite.__name__, FP8AdEMAMix.__name__)
+parameter = torch.nn.Parameter(torch.randn(4, 3))
+optimizer = FP8SOAP(
+    [parameter],
+    qargs=qargs,
+    lr=1e-3,
+    betas=(0.9, 0.99),
+    weight_decay=1e-4,
+    precondition_frequency=2,
+)
+for _ in range(3):
+    optimizer.zero_grad()
+    parameter.square().mean().backward()
+    optimizer.step()
+soap_state = optimizer.state[parameter]
+assert soap_state["fp8_exp_avg"].dtype == torch.float8_e4m3fn
+assert soap_state["fp8_exp_avg_sq"].dtype == torch.float8_e4m3fn
+assert "exp_avg" not in soap_state and "exp_avg_sq" not in soap_state
+assert torch.isfinite(parameter).all()
+print("fp8_soap_smoke", "ok", "step", soap_state["step"])
+print("optimizer_imports", MuonLite.__name__, FP8AdEMAMix.__name__, FP8SOAP.__name__)
 PY
     exit 0
 fi
@@ -265,6 +285,12 @@ elif [[ "${OPTIMIZER}" == "ademamix" ]]; then
         --ademamix_beta3_warmup_steps "${ITERATIONS}"
         --ademamix_alpha_warmup_steps "${ITERATIONS}"
         --grad-clip "${GRAD_CLIP:-0.5}"
+    )
+elif [[ "${OPTIMIZER}" == "soap" ]]; then
+    OPT_ARGS=(
+        --opt soap --lr 1e-3 --weight-decay "${WEIGHT_DECAY}"
+        --beta1 0.9 --beta2 0.99
+        --grad-clip "${GRAD_CLIP:-1.0}"
     )
 else
     echo "Unsupported OPTIMIZER=${OPTIMIZER}" >&2

@@ -277,7 +277,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument(
         "--fp8-optim",
         action="store_true",
-        help="Enable FP8 optimizer states via CoatAdamW with dynamic range expansion.",
+        help="Enable FP8 optimizer states for supported optimizers.",
     )
     parser.add_argument(
         "--fp8-qgroup-size",

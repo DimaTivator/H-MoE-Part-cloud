@@ -14,7 +14,7 @@ from .memory_efficient.slim_adam import DEFAULT_LAYER_MAP_PATH as SLIM_ADAM_DEFA
 from .memory_efficient.lora import LoRAOptimizer
 from .memory_efficient.lora_rite import LoRARiteOptimizer
 from .memory_efficient.loro import LOROAdamW
-from .sota_opt import AdEMAMix, FP8AdEMAMix, dion, Adan, ADOPT, SOAP, MARS, MARS_M, SWAN, DistributedShampoo
+from .sota_opt import AdEMAMix, FP8AdEMAMix, FP8SOAP, dion, Adan, ADOPT, SOAP, MARS, MARS_M, SWAN, DistributedShampoo
 from .multi_optimizer import MultiOptimizer
 
 
@@ -247,8 +247,8 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             max_preconditioner_dim=args.shampoo_max_preconditioner_dim,
         )
     elif optimizer_name == "soap":
-        optimizer = SOAP(
-            param_groups,
+        optimizer_cls = FP8SOAP if getattr(args, "fp8_optim", False) else SOAP
+        optimizer_kwargs = dict(
             lr=args.lr,
             betas=(args.beta1, args.beta2),
             shampoo_beta=args.shampoo_beta,
@@ -257,6 +257,12 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             precondition_frequency=args.update_gap,
             precondition_embed_debed=args.soap_precondition_embed_debed,
         )
+        if optimizer_cls is FP8SOAP:
+            if qargs is None:
+                raise ValueError("FP8SOAP requires qargs from --fp8-optim.")
+            optimizer = optimizer_cls(param_groups, qargs=qargs, **optimizer_kwargs)
+        else:
+            optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
     elif optimizer_name == "mars":
         optimizer = MARS(
             param_groups,
