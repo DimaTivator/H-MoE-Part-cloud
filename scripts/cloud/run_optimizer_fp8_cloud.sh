@@ -7,6 +7,7 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 GRAD_CLIP=${GRAD_CLIP:-}
 CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
+DEEP_INSPECT=${DEEP_INSPECT:-0}
 DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
 RESULTS_DIR=${RESULTS_DIR:-/home/jovyan/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
@@ -37,6 +38,28 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=
 if [[ "${MODE}" == "inspect" ]]; then
     echo "HOME_USAGE"
     du -x -h --max-depth=1 /home/jovyan 2>/dev/null | sort -h || true
+    if [[ "${DEEP_INSPECT}" == "1" ]]; then
+        for path in \
+            /home/jovyan/rl_muon \
+            /home/jovyan/finewebedu_h200 \
+            /home/jovyan/data \
+            /home/jovyan/hmoe-cloud \
+            /home/jovyan/exps; do
+            if [[ -d "${path}" ]]; then
+                echo "DEEP_USAGE=${path}"
+                du -x -h --max-depth=2 "${path}" 2>/dev/null | sort -h | tail -n 40
+            fi
+        done
+        echo "LARGEST_HOME_FILES"
+        find \
+            /home/jovyan/rl_muon \
+            /home/jovyan/finewebedu_h200 \
+            /home/jovyan/data \
+            /home/jovyan/hmoe-cloud \
+            /home/jovyan/exps \
+            -xdev -type f -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null \
+            | sort -nr | head -n 80 || true
+    fi
     du -sh "${DATASETS_DIR}" 2>&1 || true
     find "${DATASETS_DIR}" -maxdepth 1 -type f -printf '%s %f\n' 2>/dev/null | sort
     EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100}
