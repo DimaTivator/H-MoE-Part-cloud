@@ -61,8 +61,16 @@ echo "FINEWEB_SHARDS=${shard_count}"
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 export WANDB_PROJECT WANDB_ENTITY WANDB_BASE_URL
+
+# Cloud.ru's persistent credentials live under /home/jovyan, while the newer
+# base image sets HOME=/home/user.  Point standard netrc discovery at the
+# persistent home without copying or printing the API key.
+if [[ -z "${WANDB_API_KEY:-}" && -r /home/jovyan/.netrc ]]; then
+    export HOME=/home/jovyan
+    echo "WANDB_AUTH_SOURCE=/home/jovyan/.netrc"
+fi
 
 if [[ "${MODE}" == "smoke" ]]; then
     ITERATIONS=3
@@ -73,6 +81,13 @@ if [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="${EXPERIMENT_NAME}_smoke"
     EXTRA_ARGS=(--no-local-save)
 elif [[ "${MODE}" == "full" ]]; then
+    "${PYTHON_BIN}" - <<'PY'
+import wandb
+
+viewer = wandb.Api(timeout=30).viewer
+assert viewer, "W&B authentication returned an empty viewer"
+print("WANDB_AUTH=ok")
+PY
     ITERATIONS=75457
     WARMUP_STEPS=2000
     ACC_STEPS=4
