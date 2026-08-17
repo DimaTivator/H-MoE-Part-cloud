@@ -94,8 +94,11 @@ elif [[ "${MODE}" == "full" ]]; then
         exit 6
     fi
     "${PYTHON_BIN}" - <<'PY'
+import os
+
 import wandb
 
+assert os.environ.get("WANDB_API_KEY"), "WANDB_API_KEY is required for a full run"
 viewer = wandb.Api(timeout=30).viewer
 assert viewer, "W&B authentication returned an empty viewer"
 print("WANDB_AUTH=ok")
