@@ -20,6 +20,7 @@ WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100_torch291}
+SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
 LOG_FILE="${LOG_DIR}/${OPTIMIZER}_efficient_${MODE}_$(date +%Y%m%d_%H%M%S).log"
@@ -79,6 +80,7 @@ if [[ -z "${WANDB_API_KEY:-}" && -r /home/jovyan/.netrc ]]; then
 fi
 
 if [[ "${MODE}" == "smoke" ]]; then
+    rm -f -- "${SMOKE_MARKER}"
     ITERATIONS=3
     WARMUP_STEPS=1
     ACC_STEPS=1
@@ -87,6 +89,10 @@ if [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="${EXPERIMENT_NAME}_smoke"
     EXTRA_ARGS=(--no-local-save)
 elif [[ "${MODE}" == "full" ]]; then
+    if [[ "${REQUIRE_SMOKE_MARKER:-0}" == "1" && ! -f "${SMOKE_MARKER}" ]]; then
+        echo "Required smoke marker is missing: ${SMOKE_MARKER}" >&2
+        exit 6
+    fi
     "${PYTHON_BIN}" - <<'PY'
 import wandb
 
@@ -178,3 +184,9 @@ fi
     --log-interval 50 \
     --results-base-folder "${RESULTS_DIR}" \
     "${EXTRA_ARGS[@]}"
+train_status=$?
+if (( train_status == 0 )) && [[ "${MODE}" == "smoke" ]]; then
+    touch "${SMOKE_MARKER}"
+    echo "SMOKE_MARKER=${SMOKE_MARKER}"
+fi
+exit "${train_status}"
