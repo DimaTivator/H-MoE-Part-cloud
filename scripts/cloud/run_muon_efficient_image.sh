@@ -19,7 +19,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-fp8-pretrain}
 WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100_torch291}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291}
 SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
@@ -136,7 +136,7 @@ PY
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 "${OPTIMIZER}" torch291 efficient-image
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image
     )
 else
     echo "Unsupported MODE=${MODE}" >&2
