@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Run the Muon + FP8 optimizer-state experiment directly in the Cloud.ru
+# Run an FP8 optimizer-state experiment directly in the Cloud.ru
 # `efficient` image.  Unlike run_optimizer_fp8_cloud.sh, this entrypoint does
 # not install packages or switch to the persistent Torch 2.5.1 environment.
 
 MODE=${MODE:-smoke}
+OPTIMIZER=${OPTIMIZER:-muon}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
+GRAD_CLIP=${GRAD_CLIP:-1.0}
+CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
+LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
 DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
@@ -14,10 +19,10 @@ WANDB_PROJECT=${WANDB_PROJECT:-fp8-pretrain}
 WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_muon_optimizer_fp8_1xC_cloud_h100_torch291}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_h100_torch291}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
-LOG_FILE="${LOG_DIR}/muon_efficient_${MODE}_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${LOG_DIR}/${OPTIMIZER}_efficient_${MODE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 finish() {
@@ -25,11 +30,12 @@ finish() {
     echo "EXIT=${status}"
     echo "LOG=${LOG_FILE}"
     tail -n 100 "${LOG_FILE}" || true
-    exit 0
+    trap - EXIT
+    exit "${status}"
 }
 trap finish EXIT
 
-echo "MODE=${MODE} EXPERIMENT_NAME=${EXPERIMENT_NAME}"
+echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} EXPERIMENT_NAME=${EXPERIMENT_NAME}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
@@ -93,6 +99,23 @@ PY
     ACC_STEPS=4
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
+    if [[ "${CHECKPOINT_MODE}" == "milestones" ]]; then
+        CHECKPOINT_ARGS=(
+            --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
+            --latest-ckpt-interval "${LATEST_CKPT_INTERVAL}"
+            --upload-inter-ckpts-to wandb
+            --delete-local-inter-ckpts-after-upload
+        )
+    elif [[ "${CHECKPOINT_MODE}" == "latest" ]]; then
+        if (( LATEST_CKPT_INTERVAL <= 0 )); then
+            echo "CHECKPOINT_MODE=latest requires LATEST_CKPT_INTERVAL > 0" >&2
+            exit 2
+        fi
+        CHECKPOINT_ARGS=(--latest-ckpt-interval "${LATEST_CKPT_INTERVAL}")
+    else
+        echo "Unsupported CHECKPOINT_MODE=${CHECKPOINT_MODE}" >&2
+        exit 2
+    fi
     EXTRA_ARGS=(
         --downstream-eval-enabled
         --downstream-eval-interval 2000
@@ -100,17 +123,19 @@ PY
         --lm-eval-enabled
         --lm-eval-interval 2000
         --lm-eval-datasets wikitext103
-        --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
-        --latest-ckpt-interval 10000
-        --upload-inter-ckpts-to wandb
-        --delete-local-inter-ckpts-after-upload
+        "${CHECKPOINT_ARGS[@]}"
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 muon torch291 efficient-image
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru h100 "${OPTIMIZER}" torch291 efficient-image
     )
 else
     echo "Unsupported MODE=${MODE}" >&2
+    exit 2
+fi
+
+if [[ "${OPTIMIZER}" != "muon" && "${OPTIMIZER}" != "soap" ]]; then
+    echo "Unsupported OPTIMIZER=${OPTIMIZER}" >&2
     exit 2
 fi
 
@@ -129,12 +154,12 @@ fi
     --n-head 20 \
     --multiple-of 256 \
     --dtype bfloat16 \
-    --opt muon \
+    --opt "${OPTIMIZER}" \
     --lr 1e-3 \
-    --weight-decay 0.1 \
+    --weight-decay "${WEIGHT_DECAY}" \
     --beta1 0.9 \
     --beta2 0.99 \
-    --grad-clip 1.0 \
+    --grad-clip "${GRAD_CLIP}" \
     --scheduler wsd \
     --warmup-steps "${WARMUP_STEPS}" \
     --iterations "${ITERATIONS}" \
