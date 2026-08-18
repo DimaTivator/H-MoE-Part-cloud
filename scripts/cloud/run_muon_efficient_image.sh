@@ -11,7 +11,10 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 GRAD_CLIP=${GRAD_CLIP:-1.0}
 CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
+DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-full-h200}
+EXPECTED_FINEWEB_SHARDS=${EXPECTED_FINEWEB_SHARDS:-140}
+NPROC_PER_NODE=${NPROC_PER_NODE:-2}
+BATCH_SIZE=${BATCH_SIZE:-16}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/optimizer_fp8_cloud}
@@ -61,10 +64,13 @@ print("python_environment", "wandb", metadata.version("wandb"))
 print("gpu", torch.cuda.get_device_name(0))
 PY
 
-test -f "${DATASETS_DIR}/.subset_complete"
+test -f "${DATASETS_DIR}/.h200_snapshot_complete"
 shard_count=$(find "${DATASETS_DIR}" -maxdepth 1 -type f -name '*.parquet' | wc -l | tr -d ' ')
-test "${shard_count}" = "16"
+test "${shard_count}" = "${EXPECTED_FINEWEB_SHARDS}"
 echo "FINEWEB_SHARDS=${shard_count}"
+"${PYTHON_BIN}" scripts/cloud/audit_fineweb_h200_snapshot.py \
+    --dataset-dir "${DATASETS_DIR}" \
+    --world-size "${NPROC_PER_NODE}"
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -89,6 +95,10 @@ if [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="${EXPERIMENT_NAME}_smoke"
     EXTRA_ARGS=(--no-local-save)
 elif [[ "${MODE}" == "full" ]]; then
+    if [[ "${NPROC_PER_NODE}" != "2" || "${BATCH_SIZE}" != "16" ]]; then
+        echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
+        exit 7
+    fi
     if [[ "${REQUIRE_SMOKE_MARKER:-0}" == "1" && ! -f "${SMOKE_MARKER}" ]]; then
         echo "Required smoke marker is missing: ${SMOKE_MARKER}" >&2
         exit 6
@@ -105,7 +115,7 @@ print("WANDB_AUTH=ok")
 PY
     ITERATIONS=75457
     WARMUP_STEPS=2000
-    ACC_STEPS=4
+    ACC_STEPS=8
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
     if [[ "${CHECKPOINT_MODE}" == "milestones" ]]; then
@@ -136,7 +146,7 @@ PY
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 1gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 2gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image h200-data-parity
     )
 else
     echo "Unsupported MODE=${MODE}" >&2
@@ -148,13 +158,14 @@ if [[ "${OPTIMIZER}" != "muon" && "${OPTIMIZER}" != "soap" ]]; then
     exit 2
 fi
 
-"${TORCHRUN_BIN}" --standalone --nproc_per_node=1 src/main.py \
+"${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC_PER_NODE}" src/main.py \
     --distributed-backend nccl \
     --experiment-name "${EXPERIMENT_NAME}" \
     --dataset fineweb \
     --datasets-dir "${DATASETS_DIR}" \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
     --sequence-length 1024 \
+    --data-seed 1337 \
     --streaming \
     --workers 8 \
     --model llama \
@@ -175,7 +186,8 @@ fi
     --wsd-fract-decay 0.1 \
     --wsd-final-lr-scale 0.0 \
     --decay-type cosine \
-    --batch-size 32 \
+    --batch-size "${BATCH_SIZE}" \
+    --eval-batch-size 32 \
     --acc-steps "${ACC_STEPS}" \
     --fp8-optim \
     --fp8-qgroup-size 128 \
