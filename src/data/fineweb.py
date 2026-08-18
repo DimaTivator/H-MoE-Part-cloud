@@ -238,6 +238,14 @@ def build_fineweb_readers(
     tokenizer_factory: Callable[[], Any],
     verbose: bool = True,
 ):
+    packed_metadata_path = Path(args.datasets_dir).expanduser() / "packed_metadata.json"
+    if packed_metadata_path.is_file():
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        from .fineweb_packed import build_packed_fineweb_readers
+
+        return build_packed_fineweb_readers(args, rank=rank, world_size=world_size)
+
     dataset_root = _resolve_dataset_root(args.datasets_dir)
     manifest = build_manifest(dataset_root)
     block_tokens = args.sequence_length + 1

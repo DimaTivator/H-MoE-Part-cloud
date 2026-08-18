@@ -11,8 +11,7 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 GRAD_CLIP=${GRAD_CLIP:-1.0}
 CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-full-h200}
-EXPECTED_FINEWEB_SHARDS=${EXPECTED_FINEWEB_SHARDS:-140}
+DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-h200-packed}
 NPROC_PER_NODE=${NPROC_PER_NODE:-2}
 BATCH_SIZE=${BATCH_SIZE:-16}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
@@ -22,7 +21,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-fp8-pretrain}
 WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291_h200_data_parity_v1}
 SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
@@ -64,13 +63,8 @@ print("python_environment", "wandb", metadata.version("wandb"))
 print("gpu", torch.cuda.get_device_name(0))
 PY
 
-test -f "${DATASETS_DIR}/.h200_snapshot_complete"
-shard_count=$(find "${DATASETS_DIR}" -maxdepth 1 -type f -name '*.parquet' | wc -l | tr -d ' ')
-test "${shard_count}" = "${EXPECTED_FINEWEB_SHARDS}"
-echo "FINEWEB_SHARDS=${shard_count}"
-"${PYTHON_BIN}" scripts/cloud/audit_fineweb_h200_snapshot.py \
-    --dataset-dir "${DATASETS_DIR}" \
-    --world-size "${NPROC_PER_NODE}"
+test -f "${DATASETS_DIR}/packed_metadata.json"
+echo "FINEWEB_PACKED_METADATA=${DATASETS_DIR}/packed_metadata.json"
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false

@@ -302,11 +302,37 @@ def build_manifest(dataset_root: str | Path) -> Manifest:
     return Manifest(dataset_root=str(root), shards=tuple(shards))
 
 
+def _is_remote_dataset_root(dataset_root: str) -> bool:
+    return dataset_root.startswith(("http://", "https://"))
+
+
+def _open_manifest_parquet(
+    manifest: Manifest,
+    relative_path: str,
+) -> tuple[pq.ParquetFile, Any | None]:
+    if _is_remote_dataset_root(manifest.dataset_root):
+        import fsspec
+
+        url = f"{manifest.dataset_root.rstrip('/')}/{relative_path}"
+        source = fsspec.open(
+            url,
+            mode="rb",
+            block_size=4 * 1024 * 1024,
+            cache_type="readahead",
+        ).open()
+        return pq.ParquetFile(source), source
+
+    parquet_path = manifest.dataset_path / relative_path
+    return pq.ParquetFile(parquet_path), None
+
+
 _validated_dataset_fingerprints: dict[str, str] = {}
 _validation_lock = threading.Lock()
 
 
 def _validate_manifest_against_disk(manifest: Manifest) -> None:
+    if _is_remote_dataset_root(manifest.dataset_root):
+        return
     root_key = str(Path(manifest.dataset_root).resolve())
     with _validation_lock:
         cached = _validated_dataset_fingerprints.get(root_key)
@@ -441,7 +467,7 @@ def build_snapshot_split_plan_with_val_blocks(
         file_index_by_relative_path = {
             shard.relative_path: index for index, shard in enumerate(manifest.shards)
         }
-        parquet_files: dict[int, pq.ParquetFile] = {}
+        parquet_files: dict[int, tuple[pq.ParquetFile, Any | None]] = {}
         token_buffer: list[int] = []
         selected: list[RowGroupRef] = []
 
@@ -449,12 +475,14 @@ def build_snapshot_split_plan_with_val_blocks(
             for row_group in split_order:
                 selected.append(row_group)
                 file_index = file_index_by_relative_path[row_group.relative_path]
-                parquet_file = parquet_files.get(file_index)
-                if parquet_file is None:
-                    parquet_file = pq.ParquetFile(
-                        manifest.dataset_path / row_group.relative_path
+                parquet_entry = parquet_files.get(file_index)
+                if parquet_entry is None:
+                    parquet_entry = _open_manifest_parquet(
+                        manifest,
+                        row_group.relative_path,
                     )
-                    parquet_files[file_index] = parquet_file
+                    parquet_files[file_index] = parquet_entry
+                parquet_file, _ = parquet_entry
 
                 table = parquet_file.read_row_group(
                     row_group.row_group_index,
@@ -475,8 +503,10 @@ def build_snapshot_split_plan_with_val_blocks(
                 if len(val_blocks) >= val_sequences:
                     break
         finally:
-            for parquet_file in parquet_files.values():
+            for parquet_file, source in parquet_files.values():
                 parquet_file.close()
+                if source is not None:
+                    source.close()
 
         if len(val_blocks) < val_sequences:
             raise ValueError(
@@ -649,7 +679,12 @@ class FineWebEduStream(Iterator[list[int]]):
         self._emitted_block_count = 0
 
         self._open_parquet_file = None
+        self._open_source_file = None
         self._open_file_index: int | None = None
+        self._remote_parquet_files: dict[
+            int,
+            tuple[pq.ParquetFile, Any],
+        ] = {}
         self._loaded_row_group_key: tuple[int, int] | None = None
         self._loaded_row_group_texts: list[str] | None = None
 
@@ -677,10 +712,7 @@ class FineWebEduStream(Iterator[list[int]]):
 
         self._discard_pending_batches()
 
-        if self._open_parquet_file is not None:
-            self._open_parquet_file.close()
-        self._open_parquet_file = None
-        self._open_file_index = None
+        self._close_open_parquet_file()
         self._loaded_row_group_key = None
         self._loaded_row_group_texts = None
 
@@ -896,17 +928,45 @@ class FineWebEduStream(Iterator[list[int]]):
         return texts
 
     def _get_parquet_file(self, file_index: int):
+        if _is_remote_dataset_root(self.manifest.dataset_root):
+            remote_entry = self._remote_parquet_files.get(file_index)
+            if remote_entry is None:
+                shard = self.manifest.shards[file_index]
+                parquet_file, source = _open_manifest_parquet(
+                    self.manifest,
+                    shard.relative_path,
+                )
+                if source is None:
+                    raise RuntimeError("Remote FineWeb parquet source is missing")
+                remote_entry = (parquet_file, source)
+                self._remote_parquet_files[file_index] = remote_entry
+            return remote_entry[0]
+
         if self._open_file_index == file_index and self._open_parquet_file is not None:
             return self._open_parquet_file
 
-        if self._open_parquet_file is not None:
-            self._open_parquet_file.close()
+        self._close_open_parquet_file()
 
         shard = self.manifest.shards[file_index]
-        parquet_path = self.manifest.dataset_path / shard.relative_path
-        self._open_parquet_file = pq.ParquetFile(parquet_path)
+        self._open_parquet_file, self._open_source_file = _open_manifest_parquet(
+            self.manifest,
+            shard.relative_path,
+        )
         self._open_file_index = file_index
         return self._open_parquet_file
+
+    def _close_open_parquet_file(self) -> None:
+        if self._open_parquet_file is not None:
+            self._open_parquet_file.close()
+        if self._open_source_file is not None:
+            self._open_source_file.close()
+        self._open_parquet_file = None
+        self._open_source_file = None
+        self._open_file_index = None
+        for parquet_file, source in self._remote_parquet_files.values():
+            parquet_file.close()
+            source.close()
+        self._remote_parquet_files.clear()
 
     def _normalize_cursor(self, cursor: _SourceCursor) -> _SourceCursor:
         assigned_row_group_index = cursor.assigned_row_group_index

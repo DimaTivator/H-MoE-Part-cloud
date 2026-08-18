@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+from .fineweb import FineWebValReader
+
+
+EXPECTED_FORMAT = "packed_fineweb_h200_v1"
+EXPECTED_MANIFEST_FINGERPRINT = (
+    "7327154b810ec27cf5ca794aedcc3aea11796b218261ff24b5e2d3d2d283e00b"
+)
+EXPECTED_SPLIT_PLAN_FINGERPRINT = (
+    "550b33876a3810f4bee389f6b897584017bf9f7a6ac4456aa0de9cf043c09455"
+)
+EXPECTED_VAL_BLOCKS_SHA256 = (
+    "d9b18bcef1a4ef61a493dbcf2ebb2afadd8fa2a207111dd004d34761e406448e"
+)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(16 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class PackedFineWebTrainReader:
+    def __init__(
+        self,
+        root: Path,
+        metadata: dict[str, Any],
+        *,
+        rank: int,
+        world_size: int,
+        batch_size: int,
+        sequence_length: int,
+    ):
+        if world_size != int(metadata["world_size"]):
+            raise ValueError("Packed FineWeb world_size does not match the run")
+        if batch_size != int(metadata["batch_size"]):
+            raise ValueError("Packed FineWeb batch_size does not match the run")
+        if sequence_length != int(metadata["sequence_length"]):
+            raise ValueError("Packed FineWeb sequence_length does not match the run")
+
+        rank_metadata = metadata["ranks"][rank]
+        if int(rank_metadata["rank"]) != rank:
+            raise ValueError("Packed FineWeb rank metadata is out of order")
+        self.path = root / str(rank_metadata["file"])
+        expected_bytes = int(rank_metadata["bytes"])
+        if self.path.stat().st_size != expected_bytes:
+            raise ValueError(f"Packed FineWeb size mismatch for rank {rank}")
+        actual_sha256 = _sha256_file(self.path)
+        if actual_sha256 != str(rank_metadata["sha256"]):
+            raise ValueError(f"Packed FineWeb SHA-256 mismatch for rank {rank}")
+
+        self.batch_size = batch_size
+        self.sequence_length = sequence_length
+        self.block_tokens = sequence_length + 1
+        self.blocks = int(rank_metadata["blocks"])
+        self._num_steps = self.blocks // batch_size
+        self._tokens = np.memmap(
+            self.path,
+            mode="r",
+            dtype="<u2",
+            shape=(self.blocks, self.block_tokens),
+        )
+        self.step = 0
+
+    def set_step(self, step: int) -> None:
+        if step < 0 or step > self._num_steps:
+            raise ValueError("Packed FineWeb step is out of range")
+        self.step = step
+
+    def sample_batch(self):
+        if self.step >= self._num_steps:
+            raise RuntimeError("Packed FineWeb train reader exhausted")
+        start = self.step * self.batch_size
+        end = start + self.batch_size
+        batch = torch.from_numpy(
+            np.array(self._tokens[start:end], dtype=np.int64, copy=True)
+        )
+        self.step += 1
+        return batch[:, :-1], batch[:, 1:]
+
+
+def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
+    root = Path(args.datasets_dir).expanduser()
+    metadata = json.loads((root / "packed_metadata.json").read_text())
+    if metadata.get("format") != EXPECTED_FORMAT:
+        raise ValueError("Unsupported packed FineWeb format")
+    if metadata.get("manifest_fingerprint") != EXPECTED_MANIFEST_FINGERPRINT:
+        raise ValueError("Packed FineWeb manifest fingerprint does not match H200")
+    if metadata.get("split_plan_fingerprint") != EXPECTED_SPLIT_PLAN_FINGERPRINT:
+        raise ValueError("Packed FineWeb split fingerprint does not match H200")
+    if metadata.get("validation_blocks_sha256") != EXPECTED_VAL_BLOCKS_SHA256:
+        raise ValueError("Packed FineWeb validation token hash does not match H200")
+
+    train_reader = PackedFineWebTrainReader(
+        root,
+        metadata,
+        rank=rank,
+        world_size=world_size,
+        batch_size=args.batch_size,
+        sequence_length=args.sequence_length,
+    )
+    validation_metadata = metadata["validation"]
+    validation_path = root / str(validation_metadata["file"])
+    if validation_path.stat().st_size != int(validation_metadata["bytes"]):
+        raise ValueError("Packed FineWeb validation size mismatch")
+    if _sha256_file(validation_path) != str(validation_metadata["sha256"]):
+        raise ValueError("Packed FineWeb validation SHA-256 mismatch")
+    validation_blocks = int(validation_metadata["blocks"])
+    validation_tokens = np.memmap(
+        validation_path,
+        mode="r",
+        dtype="<u2",
+        shape=(validation_blocks, args.sequence_length + 1),
+    )
+    val_reader = FineWebValReader(
+        torch.from_numpy(np.array(validation_tokens, dtype=np.int64, copy=True)),
+        batch_size=args.eval_batch_size,
+        sequence_length=args.sequence_length,
+    )
+    return {"train": train_reader, "val": val_reader}
