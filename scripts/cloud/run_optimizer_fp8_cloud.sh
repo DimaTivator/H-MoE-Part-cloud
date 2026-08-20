@@ -221,6 +221,30 @@ if [[ "${MODE}" == "cleanup_local_checkpoints" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "cleanup_legacy_h200_tokenized" ]]; then
+    tokenized_dir=/home/jovyan/finewebedu_h200/tokenized
+    if [[ ! -d "${tokenized_dir}" ]]; then
+        echo "LEGACY_H200_TOKENIZED=missing"
+        exit 0
+    fi
+
+    case "${tokenized_dir}" in
+        /home/jovyan/finewebedu_h200/tokenized) ;;
+        *)
+            echo "Refusing unsafe dataset cleanup target: ${tokenized_dir}" >&2
+            exit 8
+            ;;
+    esac
+    df -h /home/jovyan
+    du -sh "${tokenized_dir}"
+    find "${tokenized_dir}" -maxdepth 1 -type f -printf '%s %p\n' | sort -n
+    echo "REMOVING_LEGACY_H200_TOKENIZED=${tokenized_dir}"
+    rm -rf -- "${tokenized_dir}"
+    test ! -e "${tokenized_dir}"
+    df -h /home/jovyan
+    exit 0
+fi
+
 SYSTEM_PYTHON=${SYSTEM_PYTHON:-python}
 TORCH_VENV=${TORCH_VENV:-/home/jovyan/hmoe-cloud/torch251-cu121}
 
