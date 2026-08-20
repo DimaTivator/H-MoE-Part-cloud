@@ -47,6 +47,20 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=
 
 PYTHON_BIN=$(command -v python)
 TORCHRUN_BIN=$(command -v torchrun)
+TRAIN_LAUNCHER=("${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC_PER_NODE}")
+if (( ${OMPI_COMM_WORLD_SIZE:-1} > 1 )); then
+    if [[ "${OMPI_COMM_WORLD_SIZE}" != "${NPROC_PER_NODE}" ]]; then
+        echo "mlsub MPI world size must match NPROC_PER_NODE" >&2
+        exit 8
+    fi
+    export RANK=${RANK:-"${OMPI_COMM_WORLD_RANK}"}
+    export WORLD_SIZE=${WORLD_SIZE:-"${OMPI_COMM_WORLD_SIZE}"}
+    export LOCAL_RANK=${LOCAL_RANK:-"${OMPI_COMM_WORLD_LOCAL_RANK:-0}"}
+    export MASTER_ADDR=${MASTER_ADDR:-mpimaster-0}
+    export MASTER_PORT=${MASTER_PORT:-29500}
+    TRAIN_LAUNCHER=("${PYTHON_BIN}")
+    echo "MLSUB_DDP rank=${RANK}/${WORLD_SIZE} local_rank=${LOCAL_RANK} master=${MASTER_ADDR}:${MASTER_PORT}"
+fi
 "${PYTHON_BIN}" - <<'PY'
 import importlib.metadata as metadata
 
@@ -178,7 +192,7 @@ if [[ "${OPTIMIZER}" != "muon" && "${OPTIMIZER}" != "soap" ]]; then
     exit 2
 fi
 
-"${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC_PER_NODE}" src/main.py \
+"${TRAIN_LAUNCHER[@]}" src/main.py \
     --distributed-backend nccl \
     --experiment-name "${EXPERIMENT_NAME}" \
     --dataset fineweb \
