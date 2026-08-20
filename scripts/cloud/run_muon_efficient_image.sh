@@ -56,7 +56,7 @@ if (( ${OMPI_COMM_WORLD_SIZE:-1} > 1 )); then
     export RANK=${RANK:-"${OMPI_COMM_WORLD_RANK}"}
     export WORLD_SIZE=${WORLD_SIZE:-"${OMPI_COMM_WORLD_SIZE}"}
     export LOCAL_RANK=${LOCAL_RANK:-"${OMPI_COMM_WORLD_LOCAL_RANK:-0}"}
-    export MASTER_ADDR=${MASTER_ADDR:-mpimaster-0}
+    export MASTER_ADDR=${MASTER_ADDR:-"$(hostname -f)"}
     export MASTER_PORT=${MASTER_PORT:-29500}
     TRAIN_LAUNCHER=("${PYTHON_BIN}")
     echo "MLSUB_DDP rank=${RANK}/${WORLD_SIZE} local_rank=${LOCAL_RANK} master=${MASTER_ADDR}:${MASTER_PORT}"
