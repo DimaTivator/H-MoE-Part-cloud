@@ -11,9 +11,9 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 GRAD_CLIP=${GRAD_CLIP:-1.0}
 CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-h200-packed}
-NPROC_PER_NODE=${NPROC_PER_NODE:-2}
-BATCH_SIZE=${BATCH_SIZE:-16}
+DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
+NPROC_PER_NODE=${NPROC_PER_NODE:-1}
+BATCH_SIZE=${BATCH_SIZE:-32}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/optimizer_fp8_cloud}
@@ -80,8 +80,16 @@ print("python_environment", "wandb", metadata.version("wandb"))
 print("gpu", torch.cuda.get_device_name(0))
 PY
 
-test -f "${DATASETS_DIR}/packed_metadata.json"
-echo "FINEWEB_PACKED_METADATA=${DATASETS_DIR}/packed_metadata.json"
+if [[ -f "${DATASETS_DIR}/packed_metadata.json" ]]; then
+    echo "FINEWEB_PACKED_METADATA=${DATASETS_DIR}/packed_metadata.json"
+else
+    parquet_files=("${DATASETS_DIR}"/*.parquet)
+    if [[ ! -f "${parquet_files[0]:-}" ]]; then
+        echo "FineWeb dataset is missing from ${DATASETS_DIR}" >&2
+        exit 5
+    fi
+    echo "FINEWEB_PARQUET_ROOT=${DATASETS_DIR} files=${#parquet_files[@]}"
+fi
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -107,8 +115,8 @@ if [[ "${MODE}" == "smoke" ]]; then
     EXPERIMENT_NAME="${EXPERIMENT_NAME}_smoke"
     EXTRA_ARGS=(--no-local-save)
 elif [[ "${MODE}" == "test" ]]; then
-    if [[ "${NPROC_PER_NODE}" != "2" || "${BATCH_SIZE}" != "16" ]]; then
-        echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
+    if (( NPROC_PER_NODE * BATCH_SIZE != 32 )); then
+        echo "H200 parity requires NPROC_PER_NODE * BATCH_SIZE = 32" >&2
         exit 7
     fi
     if (( TEST_ITERATIONS <= 0 || TEST_EVAL_BATCHES <= 0 || TEST_SCHEDULER_ITERATIONS <= TEST_ITERATIONS )); then
@@ -117,7 +125,7 @@ elif [[ "${MODE}" == "test" ]]; then
     fi
     ITERATIONS=${TEST_SCHEDULER_ITERATIONS}
     WARMUP_STEPS=2000
-    ACC_STEPS=8
+    ACC_STEPS=$((4 * NPROC_PER_NODE))
     EVAL_INTERVAL=${TEST_ITERATIONS}
     EVAL_BATCHES=${TEST_EVAL_BATCHES}
     RUN_LOG_INTERVAL=1
@@ -127,11 +135,11 @@ elif [[ "${MODE}" == "test" ]]; then
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 2gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image h200-data-parity packed-data test
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B "${NPROC_PER_NODE}gpu" cloudru h100 "${OPTIMIZER}" torch291 efficient-image h200-data-parity test
     )
 elif [[ "${MODE}" == "full" ]]; then
-    if [[ "${NPROC_PER_NODE}" != "2" || "${BATCH_SIZE}" != "16" ]]; then
-        echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
+    if (( NPROC_PER_NODE * BATCH_SIZE != 32 )); then
+        echo "H200 parity requires NPROC_PER_NODE * BATCH_SIZE = 32" >&2
         exit 7
     fi
     if [[ "${REQUIRE_SMOKE_MARKER:-0}" == "1" && ! -f "${SMOKE_MARKER}" ]]; then
@@ -150,7 +158,7 @@ print("WANDB_AUTH=ok")
 PY
     ITERATIONS=75457
     WARMUP_STEPS=2000
-    ACC_STEPS=8
+    ACC_STEPS=$((4 * NPROC_PER_NODE))
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
     RUN_LOG_INTERVAL=50
@@ -182,7 +190,7 @@ PY
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 2gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image h200-data-parity
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B "${NPROC_PER_NODE}gpu" cloudru h100 "${OPTIMIZER}" torch291 efficient-image h200-data-parity
     )
 else
     echo "Unsupported MODE=${MODE}" >&2
