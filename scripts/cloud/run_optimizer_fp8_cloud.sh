@@ -181,6 +181,46 @@ if [[ "${MODE}" == "cleanup_rebuildable_storage" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "cleanup_local_checkpoints" ]]; then
+    checkpoint_root=/home/jovyan/exps
+    if [[ ! -d "${checkpoint_root}" ]]; then
+        echo "LOCAL_CHECKPOINT_ROOT=missing"
+        exit 0
+    fi
+
+    mapfile -d '' checkpoint_dirs < <(
+        find "${checkpoint_root}" -mindepth 2 -type d -name ckpts -prune -print0
+    )
+    echo "LOCAL_CHECKPOINT_DIRS=${#checkpoint_dirs[@]}"
+    if (( ${#checkpoint_dirs[@]} == 0 )); then
+        exit 0
+    fi
+
+    df -h /home/jovyan
+    for path in "${checkpoint_dirs[@]}"; do
+        case "${path}" in
+            "${checkpoint_root}"/*/ckpts) ;;
+            *)
+                echo "Refusing unsafe checkpoint cleanup target: ${path}" >&2
+                exit 7
+                ;;
+        esac
+        du -sh "${path}"
+    done
+
+    for path in "${checkpoint_dirs[@]}"; do
+        echo "REMOVING_LOCAL_CHECKPOINTS=${path}"
+        rm -rf -- "${path}"
+        test ! -e "${path}"
+    done
+    if find "${checkpoint_root}" -mindepth 2 -type d -name ckpts -print -quit | grep -q .; then
+        echo "Checkpoint directory remained after cleanup" >&2
+        exit 7
+    fi
+    df -h /home/jovyan
+    exit 0
+fi
+
 SYSTEM_PYTHON=${SYSTEM_PYTHON:-python}
 TORCH_VENV=${TORCH_VENV:-/home/jovyan/hmoe-cloud/torch251-cu121}
 
