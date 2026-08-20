@@ -23,6 +23,8 @@ WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291_h200_data_parity_v1}
 SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
+TEST_ITERATIONS=${TEST_ITERATIONS:-10}
+TEST_EVAL_BATCHES=${TEST_EVAL_BATCHES:-32}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
 LOG_FILE="${LOG_DIR}/${OPTIMIZER}_efficient_${MODE}_$(date +%Y%m%d_%H%M%S).log"
@@ -86,8 +88,31 @@ if [[ "${MODE}" == "smoke" ]]; then
     ACC_STEPS=1
     EVAL_INTERVAL=3
     EVAL_BATCHES=1
+    RUN_LOG_INTERVAL=1
     EXPERIMENT_NAME="${EXPERIMENT_NAME}_smoke"
     EXTRA_ARGS=(--no-local-save)
+elif [[ "${MODE}" == "test" ]]; then
+    if [[ "${NPROC_PER_NODE}" != "2" || "${BATCH_SIZE}" != "16" ]]; then
+        echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
+        exit 7
+    fi
+    if (( TEST_ITERATIONS <= 0 || TEST_EVAL_BATCHES <= 0 )); then
+        echo "TEST_ITERATIONS and TEST_EVAL_BATCHES must be positive" >&2
+        exit 2
+    fi
+    ITERATIONS=${TEST_ITERATIONS}
+    WARMUP_STEPS=2000
+    ACC_STEPS=8
+    EVAL_INTERVAL=${TEST_ITERATIONS}
+    EVAL_BATCHES=${TEST_EVAL_BATCHES}
+    RUN_LOG_INTERVAL=1
+    EXTRA_ARGS=(
+        --no-local-save
+        --wandb
+        --wandb-project "${WANDB_PROJECT}"
+        --wandb-group "${WANDB_GROUP}"
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B 2gpu cloudru a100plus "${OPTIMIZER}" torch291 efficient-image h200-data-parity packed-data test
+    )
 elif [[ "${MODE}" == "full" ]]; then
     if [[ "${NPROC_PER_NODE}" != "2" || "${BATCH_SIZE}" != "16" ]]; then
         echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
@@ -112,6 +137,7 @@ PY
     ACC_STEPS=8
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
+    RUN_LOG_INTERVAL=50
     if [[ "${CHECKPOINT_MODE}" == "milestones" ]]; then
         CHECKPOINT_ARGS=(
             --inter-ckpts 10000 20000 30000 40000 50000 60000 67911 70000
@@ -190,7 +216,7 @@ fi
     --fp8-expansion expand \
     --eval-interval "${EVAL_INTERVAL}" \
     --eval-batches "${EVAL_BATCHES}" \
-    --log-interval 50 \
+    --log-interval "${RUN_LOG_INTERVAL}" \
     --results-base-folder "${RESULTS_DIR}" \
     "${EXTRA_ARGS[@]}"
 train_status=$?
