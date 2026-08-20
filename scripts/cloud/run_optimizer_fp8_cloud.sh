@@ -145,6 +145,42 @@ if [[ "${MODE}" == "cleanup_duplicate_fineweb" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "cleanup_rebuildable_storage" ]]; then
+    cleanup_targets=(
+        /home/jovyan/rl_muon/gsm8k_ppo_r4-a7c7fd2/venv
+        /home/jovyan/rl_muon/campaign-21ae118-153758/venv
+        /home/jovyan/evals_cache
+    )
+
+    echo "CLEANUP_REBUILDABLE_STORAGE_BEFORE"
+    df -h /home/jovyan
+    for path in "${cleanup_targets[@]}"; do
+        case "${path}" in
+            /home/jovyan/rl_muon/*/venv|/home/jovyan/evals_cache) ;;
+            *)
+                echo "Refusing unsafe cleanup target: ${path}" >&2
+                exit 6
+                ;;
+        esac
+        if [[ -e "${path}" ]]; then
+            du -sh "${path}"
+        else
+            echo "ALREADY_MISSING=${path}"
+        fi
+    done
+
+    for path in "${cleanup_targets[@]}"; do
+        if [[ -e "${path}" ]]; then
+            echo "REMOVING_REBUILDABLE=${path}"
+            rm -rf -- "${path}"
+        fi
+        test ! -e "${path}"
+    done
+    echo "CLEANUP_REBUILDABLE_STORAGE_AFTER"
+    df -h /home/jovyan
+    exit 0
+fi
+
 SYSTEM_PYTHON=${SYSTEM_PYTHON:-python}
 TORCH_VENV=${TORCH_VENV:-/home/jovyan/hmoe-cloud/torch251-cu121}
 
