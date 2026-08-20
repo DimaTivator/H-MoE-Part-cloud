@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 
 from .fineweb import FineWebValReader
+from .fineweb_replay import FineWebReplayTrainReader, blocks_sha256
 
 
 EXPECTED_FORMAT = "packed_fineweb_h200_v1"
@@ -32,6 +34,8 @@ def _sha256_file(path: Path) -> str:
 
 
 class PackedFineWebTrainReader:
+    requires_checkpoint_state = False
+
     def __init__(
         self,
         root: Path,
@@ -60,6 +64,7 @@ class PackedFineWebTrainReader:
         if actual_sha256 != str(rank_metadata["sha256"]):
             raise ValueError(f"Packed FineWeb SHA-256 mismatch for rank {rank}")
 
+        self.rank = rank
         self.batch_size = batch_size
         self.sequence_length = sequence_length
         self.block_tokens = sequence_length + 1
@@ -89,6 +94,26 @@ class PackedFineWebTrainReader:
         self.step += 1
         return batch[:, :-1], batch[:, 1:]
 
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "reader_type": "packed_fineweb_train_reader_v1",
+            "rank": int(self.rank),
+            "batch_size": self.batch_size,
+            "sequence_length": self.sequence_length,
+            "step": self.step,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("reader_type") != "packed_fineweb_train_reader_v1":
+            raise RuntimeError("Unsupported packed FineWeb checkpoint format")
+        if int(state["rank"]) != self.rank:
+            raise ValueError("Checkpoint rank does not match packed FineWeb reader")
+        if int(state["batch_size"]) != self.batch_size:
+            raise ValueError("Checkpoint batch size does not match packed FineWeb reader")
+        if int(state["sequence_length"]) != self.sequence_length:
+            raise ValueError("Checkpoint sequence length does not match packed FineWeb reader")
+        self.set_step(int(state["step"]))
+
 
 def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
     root = Path(args.datasets_dir).expanduser()
@@ -102,14 +127,40 @@ def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
     if metadata.get("validation_blocks_sha256") != EXPECTED_VAL_BLOCKS_SHA256:
         raise ValueError("Packed FineWeb validation token hash does not match H200")
 
-    train_reader = PackedFineWebTrainReader(
-        root,
-        metadata,
-        rank=rank,
-        world_size=world_size,
-        batch_size=args.batch_size,
-        sequence_length=args.sequence_length,
-    )
+    replay_world_size = int(args.fineweb_replay_world_size)
+    if replay_world_size > 1:
+        if world_size != 1 or rank != 0:
+            raise ValueError("Packed FineWeb replay requires one training process")
+        if replay_world_size != int(metadata["world_size"]):
+            raise ValueError("Replay world size does not match packed FineWeb metadata")
+        if args.batch_size % replay_world_size != 0:
+            raise ValueError("Replay world size must divide --batch-size")
+        source_batch_size = args.batch_size // replay_world_size
+        source_readers = [
+            PackedFineWebTrainReader(
+                root,
+                metadata,
+                rank=source_rank,
+                world_size=replay_world_size,
+                batch_size=source_batch_size,
+                sequence_length=args.sequence_length,
+            )
+            for source_rank in range(replay_world_size)
+        ]
+        train_reader = FineWebReplayTrainReader(
+            source_readers,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+        )
+    else:
+        train_reader = PackedFineWebTrainReader(
+            root,
+            metadata,
+            rank=rank,
+            world_size=world_size,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+        )
     validation_metadata = metadata["validation"]
     validation_path = root / str(validation_metadata["file"])
     if validation_path.stat().st_size != int(validation_metadata["bytes"]):
@@ -128,4 +179,9 @@ def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
         batch_size=args.eval_batch_size,
         sequence_length=args.sequence_length,
     )
+    if int(os.environ.get("FINEWEB_LOG_DATA_HASHES", "0")):
+        print(
+            f"FINEWEB_VALIDATION_SHA256={blocks_sha256(val_reader.blocks, dtype='<u4')}",
+            flush=True,
+        )
     return {"train": train_reader, "val": val_reader}

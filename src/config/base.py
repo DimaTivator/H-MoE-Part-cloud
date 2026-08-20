@@ -173,6 +173,15 @@ def parse_args(base_parser, args, namespace):
 
     # Dataset
     parser.add_argument("--datasets-dir", type=str, default="./datasets/")
+    parser.add_argument(
+        "--fineweb-replay-world-size",
+        default=1,
+        type=int,
+        help=(
+            "On a single training process, concatenate batches from this many "
+            "virtual FineWeb source ranks."
+        ),
+    )
     parser.add_argument("--eval-cache-dir", type=str, default=None,
         help="Directory for eval caches (e.g. wikitext103 tokenized data). "
              "Defaults to --datasets-dir if not set.")

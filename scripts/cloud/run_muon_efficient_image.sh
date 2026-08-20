@@ -11,9 +11,10 @@ WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 GRAD_CLIP=${GRAD_CLIP:-1.0}
 CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards}
+DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-h200-packed}
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 BATCH_SIZE=${BATCH_SIZE:-32}
+FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-2}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/optimizer_fp8_cloud}
@@ -42,6 +43,7 @@ finish() {
 trap finish EXIT
 
 echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} EXPERIMENT_NAME=${EXPERIMENT_NAME}"
+echo "FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
@@ -207,6 +209,7 @@ fi
     --experiment-name "${EXPERIMENT_NAME}" \
     --dataset fineweb \
     --datasets-dir "${DATASETS_DIR}" \
+    --fineweb-replay-world-size "${FINEWEB_REPLAY_WORLD_SIZE}" \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
     --sequence-length 1024 \
     --data-seed 1337 \

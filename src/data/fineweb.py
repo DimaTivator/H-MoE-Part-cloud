@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,6 +14,7 @@ from .fineweb_streaming_core import (
     build_manifest,
     build_snapshot_split_plan_with_val_blocks,
 )
+from .fineweb_replay import FineWebReplayTrainReader, blocks_sha256
 
 
 DEFAULT_FINEWEB_SPLIT_SEED = 2357
@@ -278,19 +280,50 @@ def build_fineweb_readers(
         val_blocks = None
     split_plan = _broadcast_split_plan(split_plan, rank=rank, world_size=world_size)
 
-    train_reader = FineWebTrainReader(
-        manifest,
-        split_plan,
-        tokenizer_factory,
-        tokenizer_name=tokenizer_name,
-        batch_size=args.batch_size,
-        sequence_length=args.sequence_length,
-        rank=rank,
-        world_size=world_size,
-        num_token_workers=num_token_workers,
-        doc_batch_size=DEFAULT_DOC_BATCH_SIZE,
-        prefetch_batches=DEFAULT_PREFETCH_BATCHES,
-    )
+    replay_world_size = int(args.fineweb_replay_world_size)
+    if replay_world_size < 1:
+        raise ValueError("--fineweb-replay-world-size must be positive")
+    if replay_world_size > 1:
+        if world_size != 1 or rank != 0:
+            raise ValueError("FineWeb replay is supported only by a single training process")
+        if args.batch_size % replay_world_size != 0:
+            raise ValueError("FineWeb replay world size must divide --batch-size")
+        source_batch_size = args.batch_size // replay_world_size
+        source_readers = [
+            FineWebTrainReader(
+                manifest,
+                split_plan,
+                tokenizer_factory,
+                tokenizer_name=tokenizer_name,
+                batch_size=source_batch_size,
+                sequence_length=args.sequence_length,
+                rank=source_rank,
+                world_size=replay_world_size,
+                num_token_workers=num_token_workers,
+                doc_batch_size=DEFAULT_DOC_BATCH_SIZE,
+                prefetch_batches=DEFAULT_PREFETCH_BATCHES,
+            )
+            for source_rank in range(replay_world_size)
+        ]
+        train_reader = FineWebReplayTrainReader(
+            source_readers,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+        )
+    else:
+        train_reader = FineWebTrainReader(
+            manifest,
+            split_plan,
+            tokenizer_factory,
+            tokenizer_name=tokenizer_name,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+            rank=rank,
+            world_size=world_size,
+            num_token_workers=num_token_workers,
+            doc_batch_size=DEFAULT_DOC_BATCH_SIZE,
+            prefetch_batches=DEFAULT_PREFETCH_BATCHES,
+        )
 
     val_blocks = _broadcast_val_blocks(
         val_blocks,
@@ -303,6 +336,11 @@ def build_fineweb_readers(
         batch_size=args.eval_batch_size,
         sequence_length=args.sequence_length,
     )
+    if rank == 0 and int(os.environ.get("FINEWEB_LOG_DATA_HASHES", "0")):
+        print(
+            f"FINEWEB_VALIDATION_SHA256={blocks_sha256(val_reader.blocks, dtype='<u4')}",
+            flush=True,
+        )
 
     if verbose and rank == 0:
         print(f"Using FineWeb parquet dataset at {dataset_root}")
@@ -316,7 +354,7 @@ def build_fineweb_readers(
         )
         print(
             f"FineWeb reader: world_size={world_size}, rank={rank}, "
-            f"tokenizer_threads={num_token_workers}"
+            f"replay_world_size={replay_world_size}, tokenizer_threads={num_token_workers}"
         )
         print(
             f"FineWeb val snapshot: {val_reader.num_batches()} batches x "
