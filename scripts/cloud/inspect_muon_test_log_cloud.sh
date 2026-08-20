@@ -2,7 +2,7 @@
 set -euo pipefail
 
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/optimizer_fp8_cloud}
-LOG_GLOB=${LOG_GLOB:-muon_efficient_test_*.log}
+LOG_GLOB=${LOG_GLOB:-muon_efficient_*.log}
 
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 latest=$(find "${LOG_DIR}" -maxdepth 1 -type f -name "${LOG_GLOB}" \
