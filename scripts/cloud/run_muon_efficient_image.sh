@@ -24,6 +24,7 @@ WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291_h200_data_parity_v1}
 SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
 TEST_ITERATIONS=${TEST_ITERATIONS:-10}
+TEST_SCHEDULER_ITERATIONS=${TEST_SCHEDULER_ITERATIONS:-75457}
 TEST_EVAL_BATCHES=${TEST_EVAL_BATCHES:-32}
 
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
@@ -110,17 +111,18 @@ elif [[ "${MODE}" == "test" ]]; then
         echo "H200 data-order parity requires NPROC_PER_NODE=2 and BATCH_SIZE=16" >&2
         exit 7
     fi
-    if (( TEST_ITERATIONS <= 0 || TEST_EVAL_BATCHES <= 0 )); then
-        echo "TEST_ITERATIONS and TEST_EVAL_BATCHES must be positive" >&2
+    if (( TEST_ITERATIONS <= 0 || TEST_EVAL_BATCHES <= 0 || TEST_SCHEDULER_ITERATIONS <= TEST_ITERATIONS )); then
+        echo "Test lengths are invalid" >&2
         exit 2
     fi
-    ITERATIONS=${TEST_ITERATIONS}
+    ITERATIONS=${TEST_SCHEDULER_ITERATIONS}
     WARMUP_STEPS=2000
     ACC_STEPS=8
     EVAL_INTERVAL=${TEST_ITERATIONS}
     EVAL_BATCHES=${TEST_EVAL_BATCHES}
     RUN_LOG_INTERVAL=1
     EXTRA_ARGS=(
+        --early-stop-iteration "${TEST_ITERATIONS}"
         --no-local-save
         --wandb
         --wandb-project "${WANDB_PROJECT}"

@@ -107,6 +107,12 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--cos-inf-steps", default=0, type=int)
     parser.add_argument("--iterations", default=15000, type=int)
+    parser.add_argument(
+        "--early-stop-iteration",
+        default=None,
+        type=int,
+        help="Stop cleanly before this iteration without shortening the scheduler horizon.",
+    )
     parser.add_argument("--warmup-steps", default=300, type=int)
     parser.add_argument("--lr", default=3e-4, type=float)
     # wsd schedule params

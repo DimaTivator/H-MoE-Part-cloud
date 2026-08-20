@@ -226,6 +226,12 @@ def train(
     else:
         curr_iter = 0
 
+    if cfg.early_stop_iteration is not None:
+        if cfg.early_stop_iteration <= curr_iter:
+            raise ValueError("--early-stop-iteration must be greater than the start iteration")
+        if cfg.early_stop_iteration > cfg.iterations:
+            raise ValueError("--early-stop-iteration cannot exceed --iterations")
+
     if cfg.weight_average:
         # This does generally not support resuming training, but will work if
         # cfg.wa_interval perfectly divides the iteration number of the chkpt.
@@ -434,6 +440,14 @@ def train(
 
         if curr_iter == cfg.iterations:
             # Save checkpoints and evaluate at final iteration, but no need to train further
+            break
+
+        if (
+            cfg.early_stop_iteration is not None
+            and curr_iter >= cfg.early_stop_iteration
+        ):
+            if distributed_backend.is_master_process():
+                print(f"EARLY_STOP_ITERATION={curr_iter}")
             break
 
         # MEMORY_BENCH: Before batch
