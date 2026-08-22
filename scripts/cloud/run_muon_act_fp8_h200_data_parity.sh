@@ -4,7 +4,7 @@ set -uo pipefail
 # Cloud.ru counterpart of W&B run xtnguiqq. The optimizer-step batch stays
 # 128 tokens sequences: microbatch 32 x accumulation 4 on one H100.
 
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs2/dimativator/fineweb-h200-packed}
+DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs3/dimativator/fineweb-h200-packed}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/muon_act_fp8_cloud}

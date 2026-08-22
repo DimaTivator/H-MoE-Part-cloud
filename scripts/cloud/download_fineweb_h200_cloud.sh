@@ -10,7 +10,7 @@ if [[ "${INSPECT_ONLY:-0}" == "1" ]]; then
     candidates=(
         "${DATASETS_DIR}"
         /workspace-SR006.nfs2/dimativator/fineweb-edu-100BT-16shards
-        /workspace-SR006.nfs2/dimativator/fineweb-h200-packed
+        /workspace-SR006.nfs3/dimativator/fineweb-h200-packed
     )
     for path in "${candidates[@]}"; do
         if [[ ! -d "${path}" ]]; then

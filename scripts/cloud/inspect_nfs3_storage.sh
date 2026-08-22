@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly source=/workspace-SR006.nfs2/dimativator/fineweb-h200-packed
+readonly dataset=/workspace-SR006.nfs3/dimativator/fineweb-h200-packed
 readonly destination_root=/workspace-SR006.nfs3/dimativator
 
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /workspace-SR006.nfs2 /workspace-SR006.nfs3
 
-if [[ ! -d "${source}" || -L "${source}" ]]; then
-    echo "SOURCE_MISSING_OR_UNSAFE=${source}" >&2
+if [[ ! -d "${dataset}" || -L "${dataset}" ]]; then
+    echo "DATASET_MISSING_OR_UNSAFE=${dataset}" >&2
     exit 1
 fi
-echo "SOURCE=$(du -sh -- "${source}")"
-echo "SOURCE_BYTES=$(du -sb -- "${source}" | awk '{print $1}')"
+echo "DATASET=$(du -sh -- "${dataset}")"
+echo "DATASET_BYTES=$(du -sb -- "${dataset}" | awk '{print $1}')"
 
 if [[ ! -d "${destination_root}" ]]; then
     echo "DESTINATION_ROOT_MISSING=${destination_root}"

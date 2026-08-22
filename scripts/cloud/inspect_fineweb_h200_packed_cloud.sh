@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PACKED_DESTINATION=${PACKED_DESTINATION:-/workspace-SR006.nfs2/dimativator/fineweb-h200-packed}
+PACKED_DESTINATION=${PACKED_DESTINATION:-/workspace-SR006.nfs3/dimativator/fineweb-h200-packed}
 
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
-df -h /workspace-SR006.nfs2
+df -h /workspace-SR006.nfs3
 if [[ ! -d "${PACKED_DESTINATION}" ]]; then
     echo "PACKED_DESTINATION=${PACKED_DESTINATION} missing"
     exit 0
