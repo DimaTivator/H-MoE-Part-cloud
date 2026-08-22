@@ -25,7 +25,7 @@ if [[ ! -d "${destination_root}" || -L "${destination_root}" ]]; then
 fi
 
 source_bytes=$(find "${source}" -type f -printf '%s\n' | awk '{total += $1} END {printf "%.0f\n", total}')
-available_bytes=$(df -PB1 --output=avail "${destination_root}" | tail -n 1 | tr -d ' ')
+available_bytes=$(df -B1 --output=avail "${destination_root}" | tail -n 1 | tr -d ' ')
 required_bytes=$((source_bytes + reserve_bytes))
 
 echo "MOVE_PACKED_BEFORE"
