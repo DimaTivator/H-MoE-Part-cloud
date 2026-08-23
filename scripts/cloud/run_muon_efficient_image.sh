@@ -48,6 +48,49 @@ echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
 
+if [[ "${MODE}" == "inspect" ]]; then
+    EXPERIMENT_DIR="${RESULTS_DIR}/${WANDB_GROUP}/${EXPERIMENT_NAME}"
+    CHECKPOINT_DIR="${EXPERIMENT_DIR}/ckpts"
+    LATEST_DIR="${CHECKPOINT_DIR}/latest"
+    echo "EXPERIMENT_DIR=${EXPERIMENT_DIR}"
+    echo "CHECKPOINT_FILES"
+    find "${CHECKPOINT_DIR}" -maxdepth 2 -type f \
+        -printf '%T@ %s %p\n' 2>/dev/null | sort -n || true
+    echo "CHECKPOINT_DIRS"
+    find "${CHECKPOINT_DIR}" -mindepth 1 -maxdepth 1 -type d \
+        -printf '%f\n' 2>/dev/null | sort || true
+
+    CHECKPOINT_PATH="${LATEST_DIR}/main.pt" \
+    WORKER_PATH="${LATEST_DIR}/worker_0.pt" \
+        "$(command -v python)" - <<'PY'
+import os
+from pathlib import Path
+
+import torch
+
+main_path = Path(os.environ["CHECKPOINT_PATH"])
+worker_path = Path(os.environ["WORKER_PATH"])
+if not main_path.is_file() or not worker_path.is_file():
+    raise FileNotFoundError(
+        f"incomplete latest checkpoint: main={main_path.is_file()} "
+        f"worker={worker_path.is_file()}"
+    )
+checkpoint = torch.load(
+    main_path, map_location="cpu", mmap=True, weights_only=False
+)
+torch.load(worker_path, map_location="cpu", weights_only=False)
+iteration = int(checkpoint["itr"])
+if iteration <= 0:
+    raise ValueError(f"invalid checkpoint iteration: {iteration}")
+print(f"LATEST_CHECKPOINT={main_path}")
+print(f"LATEST_CHECKPOINT_ITER={iteration}")
+print(f"LATEST_CHECKPOINT_BYTES={main_path.stat().st_size}")
+print(f"LATEST_WORKER={worker_path}")
+print(f"LATEST_WORKER_BYTES={worker_path.stat().st_size}")
+PY
+    exit 0
+fi
+
 PYTHON_BIN=$(command -v python)
 TORCHRUN_BIN=$(command -v torchrun)
 TRAIN_LAUNCHER=("${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC_PER_NODE}")
