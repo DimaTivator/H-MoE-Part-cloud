@@ -36,6 +36,18 @@ from dtype_utils.dtypes import (
 
 
 def validate_checkpoint_args(args):
+    if args.upload_latest_ckpt_to_wandb:
+        if not args.wandb:
+            raise ValueError("--upload-latest-ckpt-to-wandb requires --wandb.")
+        if args.latest_ckpt_interval <= 0:
+            raise ValueError(
+                "--upload-latest-ckpt-to-wandb requires --latest-ckpt-interval > 0."
+            )
+        if args.no_local_save:
+            raise ValueError(
+                "--upload-latest-ckpt-to-wandb requires local checkpoint saving."
+            )
+
     upload_destinations = [] if args.upload_inter_ckpts_to is None else list(
         dict.fromkeys(args.upload_inter_ckpts_to)
     )

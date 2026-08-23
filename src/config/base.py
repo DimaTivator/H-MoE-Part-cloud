@@ -48,6 +48,14 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--latest-ckpt-interval", default=0, type=int)
     parser.add_argument(
+        "--upload-latest-ckpt-to-wandb",
+        action="store_true",
+        help=(
+            "Upload each rotating --latest-ckpt-interval checkpoint to a fixed "
+            "W&B artifact name for external latest-only relays."
+        ),
+    )
+    parser.add_argument(
         "--upload-inter-ckpts-to",
         nargs="+",
         default=None,

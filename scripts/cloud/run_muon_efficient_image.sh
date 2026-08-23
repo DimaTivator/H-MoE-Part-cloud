@@ -177,6 +177,16 @@ PY
             exit 2
         fi
         CHECKPOINT_ARGS=(--latest-ckpt-interval "${LATEST_CKPT_INTERVAL}")
+    elif [[ "${CHECKPOINT_MODE}" == "latest_relay" ]]; then
+        if (( LATEST_CKPT_INTERVAL <= 0 )); then
+            echo "CHECKPOINT_MODE=latest_relay requires LATEST_CKPT_INTERVAL > 0" >&2
+            exit 2
+        fi
+        CHECKPOINT_ARGS=(
+            --inter-ckpts 67911
+            --latest-ckpt-interval "${LATEST_CKPT_INTERVAL}"
+            --upload-latest-ckpt-to-wandb
+        )
     else
         echo "Unsupported CHECKPOINT_MODE=${CHECKPOINT_MODE}" >&2
         exit 2

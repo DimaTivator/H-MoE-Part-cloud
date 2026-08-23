@@ -53,6 +53,16 @@ def _get_inter_ckpt_artifact_name(curr_iter):
     )
 
 
+def _get_latest_ckpt_artifact_name():
+    if wandb.run is None:
+        raise RuntimeError("W&B run is not initialized for latest checkpoint upload.")
+
+    run_group = wandb.run.group or "ungrouped"
+    return _sanitize_wandb_artifact_name(
+        f"{run_group}-{wandb.run.name}-latest-ckpt"
+    )
+
+
 def _get_inter_ckpt_hf_path(curr_iter: int, cfg):
     run_group = getattr(cfg, "wandb_group", None) or "ungrouped"
     return "/".join(
@@ -85,6 +95,31 @@ def _upload_inter_ckpt_to_wandb(ckpt_dir: Path, curr_iter: int, cfg):
     wandb.run.log_artifact(artifact)
     artifact.wait()
     return artifact_name
+
+
+def _upload_latest_ckpt_to_wandb(ckpt_dir: Path, curr_iter: int, cfg):
+    if wandb.run is None:
+        raise RuntimeError("W&B run is not initialized for latest checkpoint upload.")
+
+    artifact_name = _get_latest_ckpt_artifact_name()
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="checkpoint",
+        description="Rotating latest training checkpoint for external resume relay.",
+        metadata={
+            "iteration": curr_iter,
+            "experiment_name": cfg.experiment_name,
+            "wandb_group": wandb.run.group,
+            "wandb_run_id": wandb.run.id,
+        },
+    )
+    artifact.add_dir(str(ckpt_dir))
+    wandb.run.log_artifact(artifact, aliases=["latest"])
+    artifact.wait()
+    print(
+        f"Uploaded rotating latest checkpoint at iter {curr_iter} "
+        f"to W&B artifact '{artifact_name}:latest'."
+    )
 
 
 def _upload_inter_ckpt_to_huggingface(ckpt_dir: Path, curr_iter: int, cfg):
@@ -364,6 +399,11 @@ def train(
                 if distributed_backend.is_master_process():
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
+                if cfg.upload_latest_ckpt_to_wandb:
+                    distributed_backend.barrier()
+                    if distributed_backend.is_master_process():
+                        _upload_latest_ckpt_to_wandb(ckpt_dir, curr_iter, cfg)
+                    distributed_backend.barrier()
 
         ws = distributed_backend.get_world_size()
         if (
