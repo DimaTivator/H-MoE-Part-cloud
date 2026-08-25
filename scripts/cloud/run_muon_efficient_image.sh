@@ -31,6 +31,28 @@ TEST_ITERATIONS=${TEST_ITERATIONS:-10}
 TEST_SCHEDULER_ITERATIONS=${TEST_SCHEDULER_ITERATIONS:-75457}
 TEST_EVAL_BATCHES=${TEST_EVAL_BATCHES:-32}
 
+if [[ "${MODE}" == "cleanup_mlspace_log_links" ]]; then
+    MLS_LOG_LINK_DIR=/home/jovyan/mlspace-logs
+    echo "MODE=${MODE}"
+    echo "MLS_LOG_LINK_DIR=${MLS_LOG_LINK_DIR}"
+    df -h /home/jovyan 2>&1 || true
+    df -i /home/jovyan 2>&1 || true
+    if [[ ! -d "${MLS_LOG_LINK_DIR}" ]]; then
+        echo "Cloud log-link directory does not exist; nothing to clean"
+        exit 0
+    fi
+    link_count=$(find "${MLS_LOG_LINK_DIR}" -mindepth 1 -maxdepth 1 -type l -print 2>/dev/null | wc -l)
+    regular_count=$(find "${MLS_LOG_LINK_DIR}" -mindepth 1 -maxdepth 1 ! -type l -print 2>/dev/null | wc -l)
+    echo "MLS_LOG_SYMLINKS_BEFORE=${link_count}"
+    echo "MLS_LOG_NON_SYMLINKS_PRESERVED=${regular_count}"
+    find "${MLS_LOG_LINK_DIR}" -mindepth 1 -maxdepth 1 -type l -delete
+    remaining_links=$(find "${MLS_LOG_LINK_DIR}" -mindepth 1 -maxdepth 1 -type l -print 2>/dev/null | wc -l)
+    echo "MLS_LOG_SYMLINKS_AFTER=${remaining_links}"
+    df -h /home/jovyan 2>&1 || true
+    df -i /home/jovyan 2>&1 || true
+    exit 0
+fi
+
 mkdir -p "${LOG_DIR}" "${RESULTS_DIR}" "${EVAL_CACHE_DIR}"
 LOG_FILE="${LOG_DIR}/${OPTIMIZER}_efficient_${MODE}_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
