@@ -31,6 +31,15 @@ TEST_ITERATIONS=${TEST_ITERATIONS:-10}
 TEST_SCHEDULER_ITERATIONS=${TEST_SCHEDULER_ITERATIONS:-75457}
 TEST_EVAL_BATCHES=${TEST_EVAL_BATCHES:-32}
 
+if [[ "${MODE}" == "inspect_home_inodes" ]]; then
+    echo "MODE=${MODE}"
+    df -h /home/jovyan 2>&1 || true
+    df -i /home/jovyan 2>&1 || true
+    echo "HOME_INODE_USAGE"
+    du --inodes -x -d 2 /home/jovyan 2>/dev/null | sort -n | tail -n 80
+    exit 0
+fi
+
 if [[ "${MODE}" == "cleanup_mlspace_log_links" ]]; then
     MLS_LOG_LINK_DIR=/home/jovyan/mlspace-logs
     echo "MODE=${MODE}"
