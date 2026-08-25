@@ -40,6 +40,24 @@ if [[ "${MODE}" == "inspect_home_inodes" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "cleanup_triton_cache" ]]; then
+    TRITON_CACHE_DIR=/home/jovyan/.cache/triton
+    echo "MODE=${MODE}"
+    echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
+    df -i /home/jovyan 2>&1 || true
+    if [[ ! -d "${TRITON_CACHE_DIR}" ]]; then
+        echo "Triton cache does not exist; nothing to clean"
+        exit 0
+    fi
+    cache_inodes=$(du --inodes -s "${TRITON_CACHE_DIR}" 2>/dev/null | awk '{print $1}')
+    echo "TRITON_CACHE_INODES_BEFORE=${cache_inodes:-unknown}"
+    find "${TRITON_CACHE_DIR}" -depth -mindepth 1 -delete
+    cache_inodes=$(du --inodes -s "${TRITON_CACHE_DIR}" 2>/dev/null | awk '{print $1}')
+    echo "TRITON_CACHE_INODES_AFTER=${cache_inodes:-unknown}"
+    df -i /home/jovyan 2>&1 || true
+    exit 0
+fi
+
 if [[ "${MODE}" == "cleanup_mlspace_log_links" ]]; then
     MLS_LOG_LINK_DIR=/home/jovyan/mlspace-logs
     echo "MODE=${MODE}"
