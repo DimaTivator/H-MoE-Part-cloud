@@ -10,7 +10,11 @@ import numpy as np
 import torch
 
 from .fineweb import FineWebValReader
-from .fineweb_replay import FineWebReplayTrainReader, blocks_sha256
+from .fineweb_replay import (
+    FineWebReplayTrainReader,
+    FineWebSerialReplayTrainReader,
+    blocks_sha256,
+)
 
 
 EXPECTED_FORMAT = "packed_fineweb_h200_v1"
@@ -128,14 +132,19 @@ def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
         raise ValueError("Packed FineWeb validation token hash does not match H200")
 
     replay_world_size = int(args.fineweb_replay_world_size)
+    replay_layout = str(args.fineweb_replay_layout)
     if replay_world_size > 1:
         if world_size != 1 or rank != 0:
             raise ValueError("Packed FineWeb replay requires one training process")
         if replay_world_size != int(metadata["world_size"]):
             raise ValueError("Replay world size does not match packed FineWeb metadata")
-        if args.batch_size % replay_world_size != 0:
+        if replay_layout == "concat" and args.batch_size % replay_world_size != 0:
             raise ValueError("Replay world size must divide --batch-size")
-        source_batch_size = args.batch_size // replay_world_size
+        source_batch_size = (
+            args.batch_size // replay_world_size
+            if replay_layout == "concat"
+            else args.batch_size
+        )
         source_readers = [
             PackedFineWebTrainReader(
                 root,
@@ -147,7 +156,12 @@ def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
             )
             for source_rank in range(replay_world_size)
         ]
-        train_reader = FineWebReplayTrainReader(
+        replay_reader = (
+            FineWebReplayTrainReader
+            if replay_layout == "concat"
+            else FineWebSerialReplayTrainReader
+        )
+        train_reader = replay_reader(
             source_readers,
             batch_size=args.batch_size,
             sequence_length=args.sequence_length,

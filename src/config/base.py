@@ -190,6 +190,15 @@ def parse_args(base_parser, args, namespace):
             "virtual FineWeb source ranks."
         ),
     )
+    parser.add_argument(
+        "--fineweb-replay-layout",
+        default="concat",
+        choices=["concat", "serial"],
+        help=(
+            "Concatenate virtual-rank batches, or replay full source-rank "
+            "batches round-robin while preserving --batch-size."
+        ),
+    )
     parser.add_argument("--eval-cache-dir", type=str, default=None,
         help="Directory for eval caches (e.g. wikitext103 tokenized data). "
              "Defaults to --datasets-dir if not set.")

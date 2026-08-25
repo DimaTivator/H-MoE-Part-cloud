@@ -114,3 +114,87 @@ class FineWebReplayTrainReader:
         for reader, source_state in zip(self.readers, source_states, strict=True):
             reader.load_state_dict(source_state)
         self.step = int(state["step"])
+
+
+class FineWebSerialReplayTrainReader:
+    """Replay source ranks round-robin while preserving the run batch size."""
+
+    def __init__(
+        self,
+        readers: Sequence[Any],
+        *,
+        batch_size: int,
+        sequence_length: int,
+    ) -> None:
+        if len(readers) < 2:
+            raise ValueError("Serial FineWeb replay requires at least two source readers")
+        for source_rank, reader in enumerate(readers):
+            if int(reader.batch_size) != batch_size:
+                raise ValueError(
+                    f"Serial replay source rank {source_rank} has "
+                    f"batch_size={reader.batch_size}; expected {batch_size}"
+                )
+            if int(reader.sequence_length) != sequence_length:
+                raise ValueError("Serial replay source sequence length does not match the run")
+
+        self.readers = list(readers)
+        self.batch_size = batch_size
+        self.sequence_length = sequence_length
+        self.source_world_size = len(readers)
+        self.step = 0
+        self.requires_checkpoint_state = any(
+            getattr(reader, "requires_checkpoint_state", False)
+            for reader in self.readers
+        )
+        self._hash_steps = int(os.environ.get("FINEWEB_BATCH_HASH_STEPS", "0"))
+        if self._hash_steps < 0:
+            raise ValueError("FINEWEB_BATCH_HASH_STEPS must be non-negative")
+
+    def set_step(self, step: int) -> None:
+        if step < 0:
+            raise ValueError("Serial FineWeb replay step must be non-negative")
+        complete_rounds, remainder = divmod(step, self.source_world_size)
+        for source_rank, reader in enumerate(self.readers):
+            reader.set_step(complete_rounds + int(source_rank < remainder))
+        self.step = step
+
+    def sample_batch(self):
+        source_rank = self.step % self.source_world_size
+        x, y = self.readers[source_rank].sample_batch()
+        if x.shape != (self.batch_size, self.sequence_length):
+            raise RuntimeError(f"Unexpected serial replay batch shape: {tuple(x.shape)}")
+        if self.step < self._hash_steps:
+            digest = blocks_sha256(_blocks_from_xy(x, y))
+            print(
+                f"FINEWEB_SERIAL_REPLAY_BATCH_SHA256 microstep={self.step} "
+                f"source_rank={source_rank} digest={digest}",
+                flush=True,
+            )
+        self.step += 1
+        return x, y
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "reader_type": "fineweb_serial_replay_train_reader_v1",
+            "batch_size": self.batch_size,
+            "sequence_length": self.sequence_length,
+            "source_world_size": self.source_world_size,
+            "step": self.step,
+            "source_states": [reader.state_dict() for reader in self.readers],
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("reader_type") != "fineweb_serial_replay_train_reader_v1":
+            raise RuntimeError("Unsupported serial FineWeb replay checkpoint format")
+        if int(state["batch_size"]) != self.batch_size:
+            raise ValueError("Checkpoint batch_size does not match serial replay")
+        if int(state["sequence_length"]) != self.sequence_length:
+            raise ValueError("Checkpoint sequence length does not match serial replay")
+        if int(state["source_world_size"]) != self.source_world_size:
+            raise ValueError("Checkpoint source world size does not match serial replay")
+        source_states = state["source_states"]
+        if len(source_states) != self.source_world_size:
+            raise ValueError("Checkpoint has the wrong number of serial replay states")
+        for reader, source_state in zip(self.readers, source_states, strict=True):
+            reader.load_state_dict(source_state)
+        self.step = int(state["step"])

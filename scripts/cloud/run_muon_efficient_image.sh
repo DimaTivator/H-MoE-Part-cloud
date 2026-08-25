@@ -15,6 +15,7 @@ DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs3/dimativator/fineweb-h200-pack
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 BATCH_SIZE=${BATCH_SIZE:-32}
 FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-2}
+FINEWEB_REPLAY_LAYOUT=${FINEWEB_REPLAY_LAYOUT:-concat}
 RUN_SEED=${SEED:-0}
 FULL_WARMUP_STEPS=${WARMUP_STEPS:-2000}
 FULL_ACC_STEPS=${ACC_STEPS:-}
@@ -97,6 +98,7 @@ trap finish EXIT
 echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} EXPERIMENT_NAME=${EXPERIMENT_NAME}"
 echo "SEED=${RUN_SEED}"
 echo "FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE}"
+echo "FINEWEB_REPLAY_LAYOUT=${FINEWEB_REPLAY_LAYOUT}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
 nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv 2>&1 || true
@@ -321,6 +323,7 @@ fi
     --dataset fineweb \
     --datasets-dir "${DATASETS_DIR}" \
     --fineweb-replay-world-size "${FINEWEB_REPLAY_WORLD_SIZE}" \
+    --fineweb-replay-layout "${FINEWEB_REPLAY_LAYOUT}" \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
     --sequence-length 1024 \
     --data-seed 1337 \

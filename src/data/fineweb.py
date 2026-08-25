@@ -14,7 +14,11 @@ from .fineweb_streaming_core import (
     build_manifest,
     build_snapshot_split_plan_with_val_blocks,
 )
-from .fineweb_replay import FineWebReplayTrainReader, blocks_sha256
+from .fineweb_replay import (
+    FineWebReplayTrainReader,
+    FineWebSerialReplayTrainReader,
+    blocks_sha256,
+)
 
 
 DEFAULT_FINEWEB_SPLIT_SEED = 2357
@@ -281,14 +285,19 @@ def build_fineweb_readers(
     split_plan = _broadcast_split_plan(split_plan, rank=rank, world_size=world_size)
 
     replay_world_size = int(args.fineweb_replay_world_size)
+    replay_layout = str(args.fineweb_replay_layout)
     if replay_world_size < 1:
         raise ValueError("--fineweb-replay-world-size must be positive")
     if replay_world_size > 1:
         if world_size != 1 or rank != 0:
             raise ValueError("FineWeb replay is supported only by a single training process")
-        if args.batch_size % replay_world_size != 0:
+        if replay_layout == "concat" and args.batch_size % replay_world_size != 0:
             raise ValueError("FineWeb replay world size must divide --batch-size")
-        source_batch_size = args.batch_size // replay_world_size
+        source_batch_size = (
+            args.batch_size // replay_world_size
+            if replay_layout == "concat"
+            else args.batch_size
+        )
         source_readers = [
             FineWebTrainReader(
                 manifest,
@@ -305,7 +314,12 @@ def build_fineweb_readers(
             )
             for source_rank in range(replay_world_size)
         ]
-        train_reader = FineWebReplayTrainReader(
+        replay_reader = (
+            FineWebReplayTrainReader
+            if replay_layout == "concat"
+            else FineWebSerialReplayTrainReader
+        )
+        train_reader = replay_reader(
             source_readers,
             batch_size=args.batch_size,
             sequence_length=args.sequence_length,
