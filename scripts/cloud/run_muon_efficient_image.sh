@@ -15,6 +15,9 @@ DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs3/dimativator/fineweb-h200-pack
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 BATCH_SIZE=${BATCH_SIZE:-32}
 FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-2}
+RUN_SEED=${SEED:-0}
+FULL_WARMUP_STEPS=${WARMUP_STEPS:-2000}
+FULL_ACC_STEPS=${ACC_STEPS:-}
 RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/exps}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 LOG_DIR=${LOG_DIR:-/workspace-SR006.nfs3/dimativator/logs/optimizer_fp8_cloud}
@@ -43,6 +46,7 @@ finish() {
 trap finish EXIT
 
 echo "MODE=${MODE} OPTIMIZER=${OPTIMIZER} EXPERIMENT_NAME=${EXPERIMENT_NAME}"
+echo "SEED=${RUN_SEED}"
 echo "FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE}"
 echo "HOST=$(hostname) DATE=$(date --iso-8601=seconds)"
 df -h /home/jovyan /workspace-SR006.nfs2 /workspace-SR006.nfs3 /tmp 2>&1 || true
@@ -183,10 +187,6 @@ elif [[ "${MODE}" == "test" ]]; then
         --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B "${NPROC_PER_NODE}gpu" cloudru h100 "${OPTIMIZER}" torch291 efficient-image h200-data-parity test
     )
 elif [[ "${MODE}" == "full" ]]; then
-    if (( NPROC_PER_NODE * BATCH_SIZE != 32 )); then
-        echo "H200 parity requires NPROC_PER_NODE * BATCH_SIZE = 32" >&2
-        exit 7
-    fi
     if [[ "${REQUIRE_SMOKE_MARKER:-0}" == "1" && ! -f "${SMOKE_MARKER}" ]]; then
         echo "Required smoke marker is missing: ${SMOKE_MARKER}" >&2
         exit 6
@@ -202,8 +202,16 @@ assert viewer, "W&B authentication returned an empty viewer"
 print("WANDB_AUTH=ok")
 PY
     ITERATIONS=75457
-    WARMUP_STEPS=2000
-    ACC_STEPS=$((4 * NPROC_PER_NODE))
+    WARMUP_STEPS=${FULL_WARMUP_STEPS}
+    if [[ -n "${FULL_ACC_STEPS}" ]]; then
+        ACC_STEPS=${FULL_ACC_STEPS}
+    else
+        ACC_STEPS=$((4 * NPROC_PER_NODE))
+    fi
+    if (( NPROC_PER_NODE * BATCH_SIZE * ACC_STEPS != 128 )); then
+        echo "1xChinchilla runs require global batch 128" >&2
+        exit 7
+    fi
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
     RUN_LOG_INTERVAL=50
@@ -245,7 +253,7 @@ PY
         --wandb
         --wandb-project "${WANDB_PROJECT}"
         --wandb-group "${WANDB_GROUP}"
-        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B "${NPROC_PER_NODE}gpu" cloudru h100 "${OPTIMIZER}" torch291 efficient-image h200-data-parity
+        --wandb-tags fineweb optimizer_fp8 bf16_model 1xChinchilla 0.5B "${NPROC_PER_NODE}gpu" cloudru h100 "${OPTIMIZER}" "seed${RUN_SEED}" torch291 efficient-image h200-data-parity
     )
 else
     echo "Unsupported MODE=${MODE}" >&2
@@ -260,6 +268,7 @@ fi
 "${TRAIN_LAUNCHER[@]}" src/main.py \
     --distributed-backend nccl \
     --experiment-name "${EXPERIMENT_NAME}" \
+    --seed "${RUN_SEED}" \
     --dataset fineweb \
     --datasets-dir "${DATASETS_DIR}" \
     --fineweb-replay-world-size "${FINEWEB_REPLAY_WORLD_SIZE}" \
