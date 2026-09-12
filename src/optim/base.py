@@ -52,7 +52,14 @@ def _log_local_metric(cfg, record):
     """Persist scalar metrics without requiring W&B and mirror them to job logs."""
     if not getattr(cfg, "metrics_jsonl", None):
         return
-    payload = _json_safe({"timestamp": time.time(), **record})
+    payload = _json_safe(
+        {
+            "timestamp": time.time(),
+            "experiment": cfg.experiment_name,
+            "group": getattr(cfg, "wandb_group", None),
+            **record,
+        }
+    )
     encoded = json.dumps(payload, sort_keys=True, allow_nan=False)
     metrics_path = Path(cfg.metrics_jsonl)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
