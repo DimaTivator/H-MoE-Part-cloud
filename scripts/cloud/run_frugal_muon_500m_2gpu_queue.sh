@@ -86,6 +86,10 @@ fi
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_ALLOC_CONF=expandable_segments:True
+# The platform home is shared by both MPI ranks and sometimes by concurrent
+# jobs. Triton cache writes are not safe on that NFS mount.
+export TRITON_CACHE_DIR="/tmp/triton-${QUEUE_ID}-${MODE}-rank${MPI_RANK}-$$"
+mkdir -p "${TRITON_CACHE_DIR}"
 
 wait_for_marker() {
     local marker=$1
