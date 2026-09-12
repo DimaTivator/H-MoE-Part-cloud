@@ -30,6 +30,15 @@ def parse_args(base_parser, args, namespace):
         choices=distributed.registered_backends(),
     )
     parser.add_argument("--log-interval", default=50, type=int)
+    parser.add_argument(
+        "--metrics-jsonl",
+        default=None,
+        type=str,
+        help=(
+            "Append W&B-compatible scalar training and validation metrics to this "
+            "JSONL file. Records are also emitted to stdout as METRIC_JSON lines."
+        ),
+    )
     parser.add_argument("--torch-profiling", action="store_true",
         help="Profile steps 7-9 with PyTorch profiler and export a Chrome trace to <exp_dir>/profiler/.")
 

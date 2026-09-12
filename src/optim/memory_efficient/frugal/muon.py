@@ -14,6 +14,12 @@ from torch.optim import Optimizer
 
 from .proj_optimizer_templates import GaloreOptimizer, CoordOptimizer, BlockOptimizer
 from ...sota_opt.dion.newton_schulz_funcs import zeropower_via_newtonschulz5_jordan
+from ...fp8_state import (
+    FP8StateDictMixin,
+    dequantize_fp8_state,
+    init_fp8_state,
+    quantize_fp8_state_,
+)
 
 
 # ─── Newton-Schulz helpers ──────────────────────────────────────────────────
@@ -233,6 +239,84 @@ class CoordMuon(CoordOptimizer, MuonBase):
             )
         )
         return update
+
+
+class FP8CoordMuon(FP8StateDictMixin, CoordMuon):
+    """CoordMuon with its persistent projected momentum stored in FP8."""
+
+    def __init__(self, *args, qargs, **kwargs):
+        self.qargs = qargs
+        super().__init__(*args, **kwargs)
+
+    def _is_state_empty(self, state: Dict) -> bool:
+        return (
+            "momentum_buffer" not in state
+            or "scale_momentum_buffer" not in state
+        )
+
+    @torch.no_grad()
+    def _init_state(
+        self,
+        example: Optional[torch.Tensor] = None,
+        state: Optional[Dict] = None,
+    ) -> Dict:
+        if state is None:
+            state = {}
+        if example is None:
+            stored = state.get("momentum_buffer")
+            if stored is None:
+                raise ValueError("FP8 CoordMuon state initialization requires an example")
+            example = torch.zeros_like(stored, dtype=torch.float32)
+        state["step"] = 0
+        init_fp8_state(
+            state,
+            "momentum_buffer",
+            example,
+            self.qargs,
+            order="first",
+        )
+        return state
+
+    @torch.no_grad()
+    def _compute_update(
+        self,
+        grad: torch.Tensor,
+        state: Dict,
+        lr: float,
+        momentum: float,
+        nesterov: bool,
+        ns_steps: int,
+        adjust_lr: bool,
+        epsilon: float,
+        **kwargs,
+    ) -> torch.Tensor:
+        del ns_steps, kwargs
+        state["step"] = state.get("step", 0) + 1
+        grad_fp32 = grad.to(torch.float32)
+        buffer = dequantize_fp8_state(
+            state,
+            "momentum_buffer",
+            self.qargs,
+            signed=True,
+        )
+        buffer.mul_(momentum).add_(grad_fp32, alpha=1.0 - momentum)
+        update_input = grad_fp32.add(buffer, alpha=momentum) if nesterov else buffer
+
+        if update_input.ndim >= 2:
+            update = _ns(update_input, epsilon=epsilon).to(dtype=grad.dtype)
+            if adjust_lr:
+                update.mul_(max(update_input.shape[-2], update_input.shape[-1]) ** 0.5)
+        else:
+            update = update_input.sign().to(dtype=grad.dtype)
+
+        quantize_fp8_state_(
+            state,
+            "momentum_buffer",
+            buffer,
+            self.qargs,
+            signed=True,
+        )
+        return update.mul_(-lr)
 
 
 # ─── GaloreMuon ─────────────────────────────────────────────────────────────

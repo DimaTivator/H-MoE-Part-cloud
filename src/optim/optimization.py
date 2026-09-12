@@ -1,5 +1,5 @@
 import torch
-from .memory_efficient.frugal import AdamW, GaloreAdamW, CoordAdamW, BlockAdamW, SGD, GaloreSGD, CoordSGD, BlockSGD, Lion, GaloreLion, CoordLion, BlockLion, Adalayer, GaloreAdalayer, CoordAdalayer, BlockAdalayer, CoordMuon, GaloreMuon, BlockMuon
+from .memory_efficient.frugal import AdamW, GaloreAdamW, CoordAdamW, BlockAdamW, SGD, GaloreSGD, CoordSGD, BlockSGD, Lion, GaloreLion, CoordLion, BlockLion, Adalayer, GaloreAdalayer, CoordAdalayer, BlockAdalayer, CoordMuon, FP8CoordMuon, GaloreMuon, BlockMuon
 from .memory_efficient.fira import FiraAdamW
 from .memory_efficient.galore import GaLoreAdafactor, AdaMeM
 from .memory_efficient.apollo import APOLLOAdamW
@@ -25,13 +25,26 @@ def _split_proj_groups(param_groups):
     return proj_groups, non_proj_groups
 
 
-def _build_non_proj_optimizer(non_proj_groups, args):
+def _build_non_proj_optimizer(non_proj_groups, args, qargs=None):
     """Build an optimizer for non-projection param groups based on args.non_proj_opt."""
     non_proj_opt_name = getattr(args, "non_proj_opt", "adamw")
     lr = getattr(args, "non_proj_lr", None) or args.lr
     wd = args.weight_decay
 
     if non_proj_opt_name == "adamw":
+        if getattr(args, "fp8_optim", False):
+            if qargs is None:
+                raise ValueError("FP8 non-projection AdamW requires qargs from --fp8-optim.")
+            from third_party.coat.optimizer.triton_fp8_adamw import TritonCoatAdamW
+
+            return TritonCoatAdamW(
+                non_proj_groups,
+                lr=lr,
+                betas=(args.beta1, args.beta2),
+                eps=args.eps,
+                weight_decay=wd,
+                qargs=qargs,
+            )
         return torch.optim.AdamW(
             non_proj_groups,
             lr=lr,
@@ -80,7 +93,7 @@ def _build_non_proj_optimizer(non_proj_groups, args):
                          "Supported: adamw, muon, sign_sgd, sgd.")
 
 
-def _maybe_wrap_non_proj(proj_optimizer, param_groups, args):
+def _maybe_wrap_non_proj(proj_optimizer, param_groups, args, qargs=None, force=False):
     """If --non_proj_opt != adamw, build a MultiOptimizer for proj + non_proj groups.
 
     The frugal optimizer passed as *proj_optimizer* must have been constructed
@@ -92,7 +105,7 @@ def _maybe_wrap_non_proj(proj_optimizer, param_groups, args):
     unchanged so that the existing code path is not affected.
     """
     non_proj_opt_name = getattr(args, "non_proj_opt", "adamw")
-    if non_proj_opt_name == "adamw":
+    if non_proj_opt_name == "adamw" and not force:
         return proj_optimizer
 
     _, non_proj_groups = _split_proj_groups(param_groups)
@@ -100,7 +113,7 @@ def _maybe_wrap_non_proj(proj_optimizer, param_groups, args):
         # Nothing to wrap — all params are proj params.
         return proj_optimizer
 
-    non_proj_opt = _build_non_proj_optimizer(non_proj_groups, args)
+    non_proj_opt = _build_non_proj_optimizer(non_proj_groups, args, qargs=qargs)
     return MultiOptimizer(proj_optimizer, non_proj_opt)
 
 
@@ -465,8 +478,13 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             betas=(args.beta1, args.beta2), lr=args.lr, weight_decay=args.weight_decay, eps=args.eps)
         optimizer = _maybe_wrap_non_proj(optimizer, param_groups, args)
     elif optimizer_name == "coord_muon":
-        optimizer = CoordMuon(
-            frugal_groups,
+        # CoordMuon always splits transformer matrices from embeddings, norms,
+        # and the tied lm_head. The latter follow --non_proj_opt (AdamW by
+        # default), matching the published Frugal-Muon experiment scripts.
+        coord_groups, _ = _split_proj_groups(param_groups)
+        optimizer_cls = FP8CoordMuon if getattr(args, "fp8_optim", False) else CoordMuon
+        optimizer_kwargs = dict(
+            params=coord_groups,
             proj_params_lr_scale=args.proj_params_lr_scale,
             update_gap=args.update_gap,
             density=args.density,
@@ -481,7 +499,15 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             epsilon=args.eps,
             weight_decay=args.weight_decay,
         )
-        optimizer = _maybe_wrap_non_proj(optimizer, param_groups, args)
+        if optimizer_cls is FP8CoordMuon:
+            if qargs is None:
+                raise ValueError("FP8CoordMuon requires qargs from --fp8-optim.")
+            optimizer = optimizer_cls(qargs=qargs, **optimizer_kwargs)
+        else:
+            optimizer = optimizer_cls(**optimizer_kwargs)
+        optimizer = _maybe_wrap_non_proj(
+            optimizer, param_groups, args, qargs=qargs, force=True
+        )
     elif optimizer_name == "galore_muon":
         optimizer = GaloreMuon(
             frugal_groups,

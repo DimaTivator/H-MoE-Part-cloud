@@ -1,5 +1,6 @@
 from contextlib import nullcontext
 import copy
+import json
 import shutil
 from pathlib import Path
 import time
@@ -33,6 +34,31 @@ from .utils import (
     save_checkpoint,
     save_worker_state,
 )
+
+
+def _json_safe(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return value.detach().cpu().tolist()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _log_local_metric(cfg, record):
+    """Persist scalar metrics without requiring W&B and mirror them to job logs."""
+    if not getattr(cfg, "metrics_jsonl", None):
+        return
+    payload = _json_safe({"timestamp": time.time(), **record})
+    encoded = json.dumps(payload, sort_keys=True, allow_nan=False)
+    metrics_path = Path(cfg.metrics_jsonl)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_path.open("a", encoding="utf-8") as stream:
+        stream.write(encoded + "\n")
+    print(f"METRIC_JSON={encoded}", flush=True)
 
 
 def _sanitize_remote_name(value):
@@ -463,6 +489,10 @@ def train(
             distributed_backend.barrier()
             if downstream_logs is not None:
                 stats["downstream"].append(downstream_logs)
+                _log_local_metric(
+                    cfg,
+                    {"event": "downstream", "iter": curr_iter, **downstream_logs},
+                )
 
         if lm_evaluator is not None and lm_evaluator.should_run(curr_iter):
             lm_logs = None
@@ -477,6 +507,10 @@ def train(
             distributed_backend.barrier()
             if lm_logs is not None:
                 stats["aux_lm"].append(lm_logs)
+                _log_local_metric(
+                    cfg,
+                    {"event": "lm_eval", "iter": curr_iter, **lm_logs},
+                )
 
         if curr_iter == cfg.iterations:
             # Save checkpoints and evaluate at final iteration, but no need to train further
@@ -698,6 +732,24 @@ def train(
                 f"consumed_tokens={consumed_tokens}"
             )
 
+            _log_local_metric(
+                cfg,
+                {
+                    "event": "train",
+                    "iter": curr_iter,
+                    "train/loss": train_loss,
+                    "train/perplexity": 2.71828**train_loss,
+                    "lr": current_lrs[0],
+                    "iter_dt": dt,
+                    "consumed_tokens": consumed_tokens,
+                    "throughput/total_training_gflops": flops_per_token * consumed_tokens / 1e9,
+                    "tok_gpu_sec": cfg.sequence_length * cfg.batch_size * cfg.acc_steps / dt,
+                    "grad_norm": grad_norm,
+                    "memory/peak_allocated_gb": peak_mem_gb,
+                    "memory/reserved_gb": reserved_mem_gb,
+                },
+            )
+
             if cfg.wandb:
                 wandb.log(
                     {
@@ -763,6 +815,23 @@ def eval_and_log(
         f"val_loss={val_loss:.3f} "
         f"val_pp={val_perplexity:.3f} "
         f"val_acc={val_acc:3f}"
+    )
+
+    metric_prefix = "final-val" if curr_iter == cfg.iterations or full_eval else "val"
+    _log_local_metric(
+        cfg,
+        {
+            "event": "validation",
+            "iter": curr_iter,
+            f"{metric_prefix}/loss": val_loss,
+            f"{metric_prefix}/perplexity": val_perplexity,
+            f"{metric_prefix}/acc": val_acc,
+            "consumed_tokens": curr_iter
+            * distributed_backend.get_world_size()
+            * cfg.acc_steps
+            * cfg.batch_size
+            * cfg.sequence_length,
+        },
     )
 
     if cfg.wandb:
