@@ -18,5 +18,5 @@ echo "MARKERS"
 find "${RESULTS_DIR}" -maxdepth 1 -type f -name '.*.done' -print | sort
 
 echo "LATEST_CHECKPOINTS"
-find "${RESULTS_DIR}" -type f -path '*/ckpts/latest/main.pt' \
+find "${RESULTS_DIR}" -type f -path '*/ckpts/*/*.pt' \
     -printf '%s %T@ %p\n' | sort || true
