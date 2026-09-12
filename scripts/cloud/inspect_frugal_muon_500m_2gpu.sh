@@ -11,7 +11,7 @@ fi
 
 while IFS= read -r metrics_file; do
     echo "METRICS_FILE=${metrics_file}"
-    tail -n 10000 "${metrics_file}"
+    tail -n 10000 "${metrics_file}" | sed 's/^/METRIC_JSON=/'
 done < <(find "${RESULTS_DIR}" -type f -name metrics.jsonl -print | sort)
 
 echo "MARKERS"
