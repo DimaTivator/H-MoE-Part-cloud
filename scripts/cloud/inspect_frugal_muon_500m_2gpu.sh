@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RESULTS_DIR=${RESULTS_DIR:-/workspace-SR006.nfs3/dimativator/frugal-muon-500m-2gpu-20260912}
+echo "INSPECT_ROOT=${RESULTS_DIR}"
+
+if [[ ! -d "${RESULTS_DIR}" ]]; then
+    echo "RESULTS_ROOT_MISSING"
+    exit 0
+fi
+
+while IFS= read -r metrics_file; do
+    echo "METRICS_FILE=${metrics_file}"
+    tail -n 10000 "${metrics_file}"
+done < <(find "${RESULTS_DIR}" -type f -name metrics.jsonl -print | sort)
+
+echo "MARKERS"
+find "${RESULTS_DIR}" -maxdepth 1 -type f -name '.*.done' -print | sort
+
+echo "LATEST_CHECKPOINTS"
+find "${RESULTS_DIR}" -type f -path '*/ckpts/latest/main.pt' \
+    -printf '%s %T@ %p\n' | sort || true
