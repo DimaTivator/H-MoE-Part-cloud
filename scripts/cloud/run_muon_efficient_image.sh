@@ -13,8 +13,19 @@ CHECKPOINT_MODE=${CHECKPOINT_MODE:-milestones}
 LATEST_CKPT_INTERVAL=${LATEST_CKPT_INTERVAL:-10000}
 DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs3/dimativator/fineweb-h200-packed}
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
-BATCH_SIZE=${BATCH_SIZE:-32}
-FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-2}
+case "${NPROC_PER_NODE}" in
+    1|2|4) ;;
+    *)
+        echo "H200 parity supports NPROC_PER_NODE=1, 2, or 4" >&2
+        exit 2
+        ;;
+esac
+BATCH_SIZE=${BATCH_SIZE:-$((32 / NPROC_PER_NODE))}
+if (( NPROC_PER_NODE == 1 )); then
+    FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-2}
+else
+    FINEWEB_REPLAY_WORLD_SIZE=${FINEWEB_REPLAY_WORLD_SIZE:-1}
+fi
 FINEWEB_REPLAY_LAYOUT=${FINEWEB_REPLAY_LAYOUT:-concat}
 RUN_SEED=${SEED:-0}
 FULL_WARMUP_STEPS=${WARMUP_STEPS:-2000}
@@ -26,7 +37,7 @@ WANDB_PROJECT=${WANDB_PROJECT:-fp8-pretrain}
 WANDB_ENTITY=${WANDB_ENTITY:-andrey}
 WANDB_BASE_URL=${WANDB_BASE_URL:-https://wandb-radfan.ru}
 WANDB_GROUP=${WANDB_GROUP:-1xChinchilla_optimizer_fp8_cloud}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_a100plus_torch291_h200_data_parity_v1}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-500m_${OPTIMIZER}_optimizer_fp8_1xC_cloud_${NPROC_PER_NODE}gpu_torch291_h200_data_parity_v1}
 SMOKE_MARKER=${SMOKE_MARKER:-${LOG_DIR}/.${EXPERIMENT_NAME}_smoke_ok}
 TEST_ITERATIONS=${TEST_ITERATIONS:-10}
 TEST_SCHEDULER_ITERATIONS=${TEST_SCHEDULER_ITERATIONS:-75457}
@@ -208,7 +219,7 @@ if [[ "${MODE}" == "smoke" ]]; then
     rm -f -- "${SMOKE_MARKER}"
     ITERATIONS=3
     WARMUP_STEPS=1
-    ACC_STEPS=1
+    ACC_STEPS=$((4 * NPROC_PER_NODE))
     EVAL_INTERVAL=3
     EVAL_BATCHES=1
     RUN_LOG_INTERVAL=1
@@ -259,10 +270,6 @@ PY
     else
         ACC_STEPS=$((4 * NPROC_PER_NODE))
     fi
-    if (( NPROC_PER_NODE * BATCH_SIZE * ACC_STEPS != 128 )); then
-        echo "1xChinchilla runs require global batch 128" >&2
-        exit 7
-    fi
     EVAL_INTERVAL=500
     EVAL_BATCHES=32
     RUN_LOG_INTERVAL=50
@@ -310,6 +317,30 @@ else
     echo "Unsupported MODE=${MODE}" >&2
     exit 2
 fi
+
+expected_batch_size=$((32 / NPROC_PER_NODE))
+expected_acc_steps=$((4 * NPROC_PER_NODE))
+expected_replay_world_size=1
+if (( NPROC_PER_NODE == 1 )); then
+    expected_replay_world_size=2
+fi
+if (( BATCH_SIZE != expected_batch_size || ACC_STEPS != expected_acc_steps )); then
+    echo "H200 parity requires pre-DDP batch_size=${expected_batch_size} " \
+         "and acc_steps=${expected_acc_steps} for ${NPROC_PER_NODE} GPU(s)" >&2
+    exit 7
+fi
+if (( BATCH_SIZE * ACC_STEPS != 128 )); then
+    echo "1xChinchilla pre-DDP effective batch must be 128" >&2
+    exit 7
+fi
+if (( FINEWEB_REPLAY_WORLD_SIZE != expected_replay_world_size )); then
+    echo "H200 parity requires FINEWEB_REPLAY_WORLD_SIZE=${expected_replay_world_size} " \
+         "for ${NPROC_PER_NODE} GPU(s)" >&2
+    exit 7
+fi
+echo "H200_PARITY_CONFIG=ok pre_ddp_batch=${BATCH_SIZE} " \
+     "pre_ddp_acc_steps=${ACC_STEPS} physical_batch=${expected_batch_size} " \
+     "physical_acc_steps=4 global_batch=128"
 
 if [[ "${OPTIMIZER}" != "muon" && "${OPTIMIZER}" != "soap" ]]; then
     echo "Unsupported OPTIMIZER=${OPTIMIZER}" >&2

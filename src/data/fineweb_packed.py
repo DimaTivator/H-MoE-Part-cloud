@@ -119,6 +119,121 @@ class PackedFineWebTrainReader:
         self.set_step(int(state["step"]))
 
 
+class PackedFineWebShardedTrainReader:
+    """Split each packed source-rank batch across several physical ranks."""
+
+    requires_checkpoint_state = False
+
+    def __init__(
+        self,
+        root: Path,
+        metadata: dict[str, Any],
+        *,
+        rank: int,
+        world_size: int,
+        batch_size: int,
+        sequence_length: int,
+    ):
+        source_world_size = int(metadata["world_size"])
+        source_batch_size = int(metadata["batch_size"])
+        if world_size <= source_world_size or world_size % source_world_size != 0:
+            raise ValueError(
+                "Packed FineWeb physical world_size must be a multiple of the "
+                "source world_size"
+            )
+        if rank < 0 or rank >= world_size:
+            raise ValueError("Packed FineWeb physical rank is out of range")
+
+        shards_per_source = world_size // source_world_size
+        if source_batch_size % shards_per_source != 0:
+            raise ValueError(
+                "Packed FineWeb source batch cannot be divided across physical ranks"
+            )
+        expected_batch_size = source_batch_size // shards_per_source
+        if batch_size != expected_batch_size:
+            raise ValueError(
+                f"Packed FineWeb per-rank batch_size must be {expected_batch_size}; "
+                f"got {batch_size}"
+            )
+        if sequence_length != int(metadata["sequence_length"]):
+            raise ValueError("Packed FineWeb sequence_length does not match the run")
+
+        source_rank, shard_rank = divmod(rank, shards_per_source)
+        rank_metadata = metadata["ranks"][source_rank]
+        if int(rank_metadata["rank"]) != source_rank:
+            raise ValueError("Packed FineWeb rank metadata is out of order")
+        self.path = root / str(rank_metadata["file"])
+        expected_bytes = int(rank_metadata["bytes"])
+        if self.path.stat().st_size != expected_bytes:
+            raise ValueError(f"Packed FineWeb size mismatch for rank {source_rank}")
+        actual_sha256 = _sha256_file(self.path)
+        if actual_sha256 != str(rank_metadata["sha256"]):
+            raise ValueError(f"Packed FineWeb SHA-256 mismatch for rank {source_rank}")
+
+        self.rank = rank
+        self.source_rank = source_rank
+        self.shard_rank = shard_rank
+        self.shards_per_source = shards_per_source
+        self.source_batch_size = source_batch_size
+        self.batch_size = batch_size
+        self.sequence_length = sequence_length
+        self.block_tokens = sequence_length + 1
+        self.blocks = int(rank_metadata["blocks"])
+        self._num_steps = self.blocks // source_batch_size
+        self._tokens = np.memmap(
+            self.path,
+            mode="r",
+            dtype="<u2",
+            shape=(self.blocks, self.block_tokens),
+        )
+        self.step = 0
+
+    def set_step(self, step: int) -> None:
+        if step < 0 or step > self._num_steps:
+            raise ValueError("Packed FineWeb step is out of range")
+        self.step = step
+
+    def sample_batch(self):
+        if self.step >= self._num_steps:
+            raise RuntimeError("Packed FineWeb train reader exhausted")
+        start = (
+            self.step * self.source_batch_size
+            + self.shard_rank * self.batch_size
+        )
+        end = start + self.batch_size
+        batch = torch.from_numpy(
+            np.array(self._tokens[start:end], dtype=np.int64, copy=True)
+        )
+        self.step += 1
+        return batch[:, :-1], batch[:, 1:]
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "reader_type": "packed_fineweb_sharded_train_reader_v1",
+            "rank": self.rank,
+            "source_rank": self.source_rank,
+            "shard_rank": self.shard_rank,
+            "batch_size": self.batch_size,
+            "sequence_length": self.sequence_length,
+            "step": self.step,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if state.get("reader_type") != "packed_fineweb_sharded_train_reader_v1":
+            raise RuntimeError("Unsupported packed FineWeb checkpoint format")
+        expected = {
+            "rank": self.rank,
+            "source_rank": self.source_rank,
+            "shard_rank": self.shard_rank,
+            "batch_size": self.batch_size,
+            "sequence_length": self.sequence_length,
+        }
+        for key, value in expected.items():
+            if int(state[key]) != value:
+                raise ValueError(f"Checkpoint {key} does not match packed FineWeb reader")
+        self.set_step(int(state["step"]))
+
+
 def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
     root = Path(args.datasets_dir).expanduser()
     metadata = json.loads((root / "packed_metadata.json").read_text())
@@ -166,8 +281,17 @@ def build_packed_fineweb_readers(args, *, rank: int, world_size: int):
             batch_size=args.batch_size,
             sequence_length=args.sequence_length,
         )
-    else:
+    elif world_size == int(metadata["world_size"]):
         train_reader = PackedFineWebTrainReader(
+            root,
+            metadata,
+            rank=rank,
+            world_size=world_size,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+        )
+    else:
+        train_reader = PackedFineWebShardedTrainReader(
             root,
             metadata,
             rank=rank,
