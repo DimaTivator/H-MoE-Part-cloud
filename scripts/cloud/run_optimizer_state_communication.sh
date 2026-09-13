@@ -14,8 +14,14 @@ case "${MODE}" in
     full)
         MODE_ARGS=(--models 500M 1B --warmup-steps 10 --measure-steps 50 --repeats 3)
         ;;
+    large_smoke)
+        MODE_ARGS=(--models 2.8B --warmup-steps 2 --measure-steps 3 --repeats 1)
+        ;;
+    large_full)
+        MODE_ARGS=(--models 2.8B --warmup-steps 10 --measure-steps 50 --repeats 3)
+        ;;
     *)
-        echo "MODE must be smoke or full" >&2
+        echo "MODE must be smoke, full, large_smoke, or large_full" >&2
         exit 2
         ;;
 esac
