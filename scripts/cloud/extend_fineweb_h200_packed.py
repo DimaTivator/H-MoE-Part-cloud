@@ -107,13 +107,15 @@ def maybe_finalize(destination: Path) -> None:
 
 def extend_rank(
     destination: Path,
+    storage: Path,
     manifest,
     split_plan,
     *,
     rank: int,
     initial_state: dict[str, Any],
 ) -> None:
-    final_path = destination / f"train_rank{rank}.continuation.uint16"
+    storage.mkdir(parents=True, exist_ok=True)
+    final_path = storage / f"train_rank{rank}.continuation.uint16"
     metadata_path = destination / f"train_rank{rank}.continuation.json"
     if final_path.is_file() and metadata_path.is_file():
         print(f"RANK={rank} continuation already complete", flush=True)
@@ -173,7 +175,11 @@ def extend_rank(
     os.replace(part_path, final_path)
     continuation = {
         "rank": rank,
-        "file": final_path.name,
+        "file": (
+            final_path.name
+            if storage.resolve() == destination.resolve()
+            else str(final_path)
+        ),
         "blocks": BLOCKS_PER_RANK,
         "bytes": expected_bytes,
         "sha256": sha256_file(final_path),
@@ -191,15 +197,18 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--dataset-root")
     parser.add_argument("--destination", type=Path, required=True)
+    parser.add_argument("--storage", type=Path)
     parser.add_argument("--rank", type=int, choices=range(WORLD_SIZE), required=True)
     parser.add_argument("--initial-state", type=Path, required=True)
     args = parser.parse_args()
+    storage = args.storage or args.destination
 
     manifest = load_manifest(args.manifest, dataset_root=args.dataset_root)
     snapshot = build_snapshot(manifest)
     initial_state = load_initial_state(args.initial_state, args.rank)
     extend_rank(
         args.destination,
+        storage,
         manifest,
         snapshot.plan,
         rank=args.rank,
