@@ -1,5 +1,6 @@
 import os
 import math
+import time
 from contextlib import contextmanager
 
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -8,6 +9,7 @@ from torch.distributed import (
     destroy_process_group,
     get_world_size,
     barrier,
+    all_reduce,
 )
 
 from .backend import DistributedBackend
@@ -21,6 +23,10 @@ class DataParallelDistributedBackend(DistributedBackend):
         assert "cuda" in args.device, "DDP backend can not be used on non-CUDA devices"
         init_process_group(backend=args.distributed_backend)
         self.local_rank = int(os.environ["LOCAL_RANK"])
+        self.profile_communication = getattr(args, "optimizer_comm_profile", False)
+        self._profile_active = False
+        self._step_comm_profile = {}
+        self._last_comm_profile = {}
 
     def get_adjusted_args_for_process(self, args):
         effective_batch_size = args.batch_size * args.acc_steps
@@ -40,7 +46,10 @@ class DataParallelDistributedBackend(DistributedBackend):
         return args
 
     def transform_model(self, model, **kwargs):
-        return DDP(model, device_ids=[self.local_rank], **kwargs)
+        model = DDP(model, device_ids=[self.local_rank], **kwargs)
+        if self.profile_communication and self.get_world_size() > 1:
+            model.register_comm_hook(self, _profiled_allreduce_hook)
+        return model
 
     @contextmanager
     def get_context_for_microstep_forward(
@@ -68,3 +77,54 @@ class DataParallelDistributedBackend(DistributedBackend):
 
     def barrier(self):
         barrier()
+
+    def start_step_profile(self):
+        if not self.profile_communication:
+            return
+        self._profile_active = True
+        self._step_comm_profile = {
+            "ddp_gradient_payload_bytes": 0.0,
+            "ddp_gradient_ring_traffic_bytes_per_rank": 0.0,
+            "ddp_gradient_collectives": 0.0,
+            "_first_start": None,
+            "_last_end": None,
+        }
+
+    def finish_step_profile(self):
+        if not self.profile_communication:
+            return
+        self._profile_active = False
+        first = self._step_comm_profile.pop("_first_start")
+        last = self._step_comm_profile.pop("_last_end")
+        self._step_comm_profile["ddp_gradient_comm_span_ms"] = (
+            (last - first) * 1e3 if first is not None and last is not None else 0.0
+        )
+        self._last_comm_profile = dict(self._step_comm_profile)
+
+    def get_last_comm_profile(self):
+        return dict(self._last_comm_profile)
+
+
+def _profiled_allreduce_hook(state: DataParallelDistributedBackend, bucket):
+    tensor = bucket.buffer()
+    if state._profile_active:
+        now = time.perf_counter()
+        if state._step_comm_profile["_first_start"] is None:
+            state._step_comm_profile["_first_start"] = now
+        payload_bytes = tensor.numel() * tensor.element_size()
+        world_size = get_world_size()
+        state._step_comm_profile["ddp_gradient_payload_bytes"] += payload_bytes
+        state._step_comm_profile["ddp_gradient_ring_traffic_bytes_per_rank"] += (
+            2.0 * payload_bytes * (world_size - 1) / world_size
+        )
+        state._step_comm_profile["ddp_gradient_collectives"] += 1
+
+    tensor.div_(get_world_size())
+    future = all_reduce(tensor, async_op=True).get_future()
+
+    def _done(result):
+        if state._profile_active:
+            state._step_comm_profile["_last_end"] = time.perf_counter()
+        return result.value()[0]
+
+    return future.then(_done)

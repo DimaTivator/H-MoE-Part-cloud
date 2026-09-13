@@ -344,6 +344,28 @@ def parse_args(base_parser, args, namespace):
         choices=["true", "expand", "false"],
         help="Dynamic range expansion mode for optimizer state quantization.",
     )
+    parser.add_argument(
+        "--optimizer-state-sharding",
+        action="store_true",
+        help=(
+            "Shard persistent Muon state by matrix rows and all-gather the "
+            "state-derived pre-Newton-Schulz payload after DDP gradient sync."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer-state-wire-dtype",
+        default="auto",
+        choices=["auto", "bfloat16", "fp8"],
+        help=(
+            "Wire format for state-derived optimizer payloads. auto uses FP8 "
+            "with --fp8-optim and BF16 otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer-comm-profile",
+        action="store_true",
+        help="Measure optimizer-state collectives, codec time, and wire bytes.",
+    )
 
     # ── Training Stabilization ───────────────────────────────────────────
     parser.add_argument(

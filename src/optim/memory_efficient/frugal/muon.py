@@ -8,10 +8,12 @@ stateless NS-only Muon in the complement subspace.
 """
 
 import torch
+from contextlib import nullcontext
 from typing import Callable, Dict, Iterable, Optional
 import torch.nn as nn
 from torch.optim import Optimizer
 
+from optim.distributed_state_comm import DistributedStateCommunicator, RowShard
 from .proj_optimizer_templates import GaloreOptimizer, CoordOptimizer, BlockOptimizer
 from ...sota_opt.dion.newton_schulz_funcs import zeropower_via_newtonschulz5_jordan
 from ...fp8_state import (
@@ -29,10 +31,21 @@ def _ns(G: torch.Tensor, epsilon: float = 1e-7) -> torch.Tensor:
     return zeropower_via_newtonschulz5_jordan(G, epsilon=epsilon)
 
 
-def _stateless_muon(grad: torch.Tensor, lr: float, epsilon: float, adjust_lr: bool) -> torch.Tensor:
+def _stateless_muon(
+    grad: torch.Tensor,
+    lr: float,
+    epsilon: float,
+    adjust_lr: bool,
+    state_comm: Optional[DistributedStateCommunicator] = None,
+) -> torch.Tensor:
     """Muon update with no momentum: NS(grad) scaled by lr."""
     if grad.ndim >= 2 and grad.numel() > 0:
-        g_ns = _ns(grad, epsilon=epsilon).to(dtype=grad.dtype)
+        # DDP has already replicated this stateless gradient. Only persistent
+        # momentum is sharded, so the inactive complement needs no collective.
+        ns_input = grad
+        phase = state_comm.phase("orthogonalize", ns_input) if state_comm else nullcontext()
+        with phase:
+            g_ns = _ns(ns_input, epsilon=epsilon).to(dtype=grad.dtype)
         if adjust_lr:
             g_ns = g_ns * (max(grad.shape[-2], grad.shape[-1]) ** 0.5)
     else:
@@ -41,7 +54,12 @@ def _stateless_muon(grad: torch.Tensor, lr: float, epsilon: float, adjust_lr: bo
 
 
 def _coord_stateless_muon(
-    grad: torch.Tensor, projector, lr: float, epsilon: float, adjust_lr: bool
+    grad: torch.Tensor,
+    projector,
+    lr: float,
+    epsilon: float,
+    adjust_lr: bool,
+    state_comm: Optional[DistributedStateCommunicator] = None,
 ) -> torch.Tensor:
     """Apply stateless Muon to the inactive coordinate complement.
 
@@ -59,7 +77,9 @@ def _coord_stateless_muon(
         mask[active_idx] = False
         inactive_idx = torch.where(mask)[0]
         if inactive_idx.numel() > 0:
-            update[:, inactive_idx] = _stateless_muon(grad[:, inactive_idx], lr, epsilon, adjust_lr)
+            update[:, inactive_idx] = _stateless_muon(
+                grad[:, inactive_idx], lr, epsilon, adjust_lr, state_comm
+            )
 
     elif coord_choice == "rows":
         m = grad.shape[0]
@@ -67,7 +87,9 @@ def _coord_stateless_muon(
         mask[active_idx] = False
         inactive_idx = torch.where(mask)[0]
         if inactive_idx.numel() > 0:
-            update[inactive_idx, :] = _stateless_muon(grad[inactive_idx, :], lr, epsilon, adjust_lr)
+            update[inactive_idx, :] = _stateless_muon(
+                grad[inactive_idx, :], lr, epsilon, adjust_lr, state_comm
+            )
 
     else:  # randk – scattered elements; fall back to sign update
         row_idx, col_idx = active_idx
@@ -81,7 +103,7 @@ def _coord_stateless_muon(
 
 # ─── MuonBase ───────────────────────────────────────────────────────────────
 
-class MuonBase(Optimizer):
+class MuonBase(FP8StateDictMixin, Optimizer):
     """Single-GPU Muon as a composable base for FRUGAL projection optimizers.
 
     Stateful update rule:
@@ -101,6 +123,10 @@ class MuonBase(Optimizer):
         adjust_lr: bool = True,
         epsilon: float = 1e-7,
         weight_decay: float = 0.0,
+        qargs=None,
+        distributed_state_sharding: bool = False,
+        state_wire_dtype: str = "auto",
+        profile_communication: bool = False,
     ):
         defaults = dict(
             lr=lr, momentum=momentum, nesterov=nesterov,
@@ -108,24 +134,66 @@ class MuonBase(Optimizer):
             epsilon=epsilon, weight_decay=weight_decay,
         )
         super().__init__(params, defaults)
+        self.qargs = qargs
+        self._state_comm = DistributedStateCommunicator(
+            enabled=distributed_state_sharding,
+            wire_dtype=state_wire_dtype,
+            qargs=qargs,
+            profile=profile_communication,
+        )
 
     def _is_state_empty(self, state: Dict) -> bool:
         return "momentum_buffer" not in state
+
+    def get_last_comm_profile(self):
+        return self._state_comm.get_last_profile()
+
+    def _state_reference(self, example: torch.Tensor) -> torch.Tensor:
+        if example.ndim >= 2 and self._state_comm.enabled:
+            return self._state_comm.local_rows(example).tensor
+        return example
+
+    @staticmethod
+    def _clear_momentum_state(state: Dict) -> None:
+        for key in tuple(state):
+            if key == "momentum_buffer" or key.endswith("_momentum_buffer"):
+                del state[key]
 
     @torch.no_grad()
     def _init_state(self, example: Optional[torch.Tensor] = None, state: Optional[Dict] = None) -> Dict:
         assert not (state is None and example is None)
         if state is None:
             state = {}
-        if not self._is_state_empty(state):
-            # Existing buffer: zero-reset, resize if shape changed
-            if example is not None and state["momentum_buffer"].shape != example.shape:
-                state["momentum_buffer"] = torch.zeros_like(example)
+        reference = self._state_reference(example) if example is not None else None
+        existing = state.get("momentum_buffer")
+        shape_changed = reference is not None and existing is not None and existing.shape != reference.shape
+        if self._is_state_empty(state) or shape_changed:
+            self._clear_momentum_state(state)
+            if reference is None:
+                state["momentum_buffer"] = None
+            elif self.qargs is None:
+                state["momentum_buffer"] = torch.zeros_like(reference)
             else:
-                state["momentum_buffer"].zero_()
+                init_fp8_state(
+                    state,
+                    "momentum_buffer",
+                    reference,
+                    self.qargs,
+                    order="first",
+                )
+        elif self.qargs is None:
+            state["momentum_buffer"].zero_()
         else:
-            state["momentum_buffer"] = torch.zeros_like(example) if example is not None else None
+            zero = torch.zeros_like(
+                dequantize_fp8_state(
+                    state, "momentum_buffer", self.qargs, signed=True
+                )
+            )
+            quantize_fp8_state_(
+                state, "momentum_buffer", zero, self.qargs, signed=True
+            )
         state["step"] = 0
+        state["state_world_size"] = self._state_comm.world_size
         return state
 
     @torch.no_grad()
@@ -135,17 +203,42 @@ class MuonBase(Optimizer):
     ) -> torch.Tensor:
         state["step"] = state.get("step", 0) + 1
 
+        shard = self._state_comm.local_rows(grad) if grad.ndim >= 2 else None
+        local_grad = shard.tensor if shard is not None else grad
+
         if state.get("momentum_buffer") is None:
-            state["momentum_buffer"] = torch.zeros_like(grad)
+            self._init_state(example=grad, state=state)
+        if state.get("state_world_size", 1) != self._state_comm.world_size:
+            raise ValueError(
+                "FRUGAL Muon optimizer state was saved with a different world "
+                "size; resharding checkpoints is not implemented."
+            )
 
-        buf = state["momentum_buffer"]
+        buf = (
+            state["momentum_buffer"]
+            if self.qargs is None
+            else dequantize_fp8_state(
+                state, "momentum_buffer", self.qargs, signed=True
+            )
+        )
         # EMA: buf = mu * buf + (1 - mu) * grad
-        buf.mul_(momentum).add_(grad, alpha=1.0 - momentum)
+        buf.mul_(momentum).add_(local_grad, alpha=1.0 - momentum)
 
-        g = grad.add(buf, alpha=momentum) if nesterov else buf.clone()
+        g = local_grad.add(buf, alpha=momentum) if nesterov else buf.clone()
+
+        if self.qargs is not None:
+            quantize_fp8_state_(
+                state, "momentum_buffer", buf, self.qargs, signed=True
+            )
 
         if g.ndim >= 2:
-            g_ns = _ns(g, epsilon=epsilon).to(dtype=grad.dtype)
+            if self._state_comm.enabled:
+                g = self._state_comm.gather_rows(
+                    RowShard(g, shard.original_rows),
+                    state_derived=True,
+                )
+            with self._state_comm.phase("orthogonalize", g):
+                g_ns = _ns(g, epsilon=epsilon).to(dtype=grad.dtype)
             if adjust_lr:
                 g_ns = g_ns * (max(g.shape[-2], g.shape[-1]) ** 0.5)
         else:
@@ -155,6 +248,7 @@ class MuonBase(Optimizer):
 
     @torch.no_grad()
     def step(self, closure: Callable = None):
+        self._state_comm.start_step()
         loss = None
         if closure is not None:
             loss = closure()
@@ -169,6 +263,7 @@ class MuonBase(Optimizer):
                 p.mul_(1 - group["lr"] * group["weight_decay"])
                 update = self._compute_update(grad, state, **group)
                 p.add_(update)
+        self._state_comm.finish_step()
         return loss
 
 
@@ -201,6 +296,10 @@ class CoordMuon(CoordOptimizer, MuonBase):
         adjust_lr: bool = True,
         epsilon: float = 1e-7,
         weight_decay: float = 0.0,
+        qargs=None,
+        distributed_state_sharding: bool = False,
+        state_wire_dtype: str = "auto",
+        profile_communication: bool = False,
     ):
         params = super().__init__(
             params=params,
@@ -219,7 +318,18 @@ class CoordMuon(CoordOptimizer, MuonBase):
             lr=lr, momentum=momentum, nesterov=nesterov,
             ns_steps=ns_steps, adjust_lr=adjust_lr,
             epsilon=epsilon, weight_decay=weight_decay,
+            qargs=qargs,
+            distributed_state_sharding=distributed_state_sharding,
+            state_wire_dtype=state_wire_dtype,
+            profile_communication=profile_communication,
         )
+
+    @torch.no_grad()
+    def step(self, closure: Callable = None):
+        self._state_comm.start_step()
+        loss = super().step(closure)
+        self._state_comm.finish_step()
+        return loss
 
     @torch.no_grad()
     def _proj_params_update(self, grad: torch.Tensor, state: Dict, group: Dict) -> torch.Tensor:
@@ -236,17 +346,18 @@ class CoordMuon(CoordOptimizer, MuonBase):
             _coord_stateless_muon(
                 grad, state["projector"], inactive_lr,
                 group.get("epsilon", 1e-7), group.get("adjust_lr", True),
+                self._state_comm,
             )
         )
         return update
 
 
-class FP8CoordMuon(FP8StateDictMixin, CoordMuon):
+class FP8CoordMuon(CoordMuon):
     """CoordMuon with its persistent projected momentum stored in FP8."""
 
     def __init__(self, *args, qargs, **kwargs):
         self.qargs = qargs
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, qargs=qargs, **kwargs)
 
     def _is_state_empty(self, state: Dict) -> bool:
         return (
@@ -260,22 +371,7 @@ class FP8CoordMuon(FP8StateDictMixin, CoordMuon):
         example: Optional[torch.Tensor] = None,
         state: Optional[Dict] = None,
     ) -> Dict:
-        if state is None:
-            state = {}
-        if example is None:
-            stored = state.get("momentum_buffer")
-            if stored is None:
-                raise ValueError("FP8 CoordMuon state initialization requires an example")
-            example = torch.zeros_like(stored, dtype=torch.float32)
-        state["step"] = 0
-        init_fp8_state(
-            state,
-            "momentum_buffer",
-            example,
-            self.qargs,
-            order="first",
-        )
-        return state
+        return MuonBase._init_state(self, example=example, state=state)
 
     @torch.no_grad()
     def _compute_update(
@@ -290,33 +386,18 @@ class FP8CoordMuon(FP8StateDictMixin, CoordMuon):
         epsilon: float,
         **kwargs,
     ) -> torch.Tensor:
-        del ns_steps, kwargs
-        state["step"] = state.get("step", 0) + 1
-        grad_fp32 = grad.to(torch.float32)
-        buffer = dequantize_fp8_state(
-            state,
-            "momentum_buffer",
-            self.qargs,
-            signed=True,
+        return MuonBase._compute_update(
+            self,
+            grad=grad,
+            state=state,
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            adjust_lr=adjust_lr,
+            epsilon=epsilon,
+            **kwargs,
         )
-        buffer.mul_(momentum).add_(grad_fp32, alpha=1.0 - momentum)
-        update_input = grad_fp32.add(buffer, alpha=momentum) if nesterov else buffer
-
-        if update_input.ndim >= 2:
-            update = _ns(update_input, epsilon=epsilon).to(dtype=grad.dtype)
-            if adjust_lr:
-                update.mul_(max(update_input.shape[-2], update_input.shape[-1]) ** 0.5)
-        else:
-            update = update_input.sign().to(dtype=grad.dtype)
-
-        quantize_fp8_state_(
-            state,
-            "momentum_buffer",
-            buffer,
-            self.qargs,
-            signed=True,
-        )
-        return update.mul_(-lr)
 
 
 # ─── GaloreMuon ─────────────────────────────────────────────────────────────

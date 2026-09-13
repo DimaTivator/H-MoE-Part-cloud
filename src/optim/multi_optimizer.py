@@ -47,6 +47,16 @@ class MultiOptimizer:
         self.proj_opt.zero_grad(set_to_none=set_to_none)
         self.non_proj_opt.zero_grad(set_to_none=set_to_none)
 
+    def get_last_comm_profile(self):
+        profile = {}
+        for optimizer in (self.proj_opt, self.non_proj_opt):
+            getter = getattr(optimizer, "get_last_comm_profile", None)
+            if getter is None:
+                continue
+            for key, value in getter().items():
+                profile[key] = profile.get(key, 0.0) + float(value)
+        return profile
+
     # ------------------------------------------------------------------
     # Checkpoint interface
     # ------------------------------------------------------------------

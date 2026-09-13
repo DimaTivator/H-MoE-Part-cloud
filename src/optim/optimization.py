@@ -72,6 +72,12 @@ def _build_non_proj_optimizer(non_proj_groups, args, qargs=None):
             adjust_lr=getattr(args, "frugal_muon_adjust_lr", True),
             epsilon=args.eps,
             weight_decay=wd,
+            qargs=qargs if getattr(args, "fp8_optim", False) else None,
+            distributed_state_sharding=getattr(
+                args, "optimizer_state_sharding", False
+            ),
+            state_wire_dtype=getattr(args, "optimizer_state_wire_dtype", "auto"),
+            profile_communication=getattr(args, "optimizer_comm_profile", False),
         )
     elif non_proj_opt_name == "sign_sgd":
         from .memory_efficient.hybrid_lora import SignSGD
@@ -483,6 +489,7 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
         # default), matching the published Frugal-Muon experiment scripts.
         coord_groups, _ = _split_proj_groups(param_groups)
         optimizer_cls = FP8CoordMuon if getattr(args, "fp8_optim", False) else CoordMuon
+        distributed_state_sharding = getattr(args, "optimizer_state_sharding", False)
         optimizer_kwargs = dict(
             params=coord_groups,
             proj_params_lr_scale=args.proj_params_lr_scale,
@@ -498,6 +505,9 @@ def get_optimizer(param_groups, args, model=None, qargs=None):
             adjust_lr=args.frugal_muon_adjust_lr,
             epsilon=args.eps,
             weight_decay=args.weight_decay,
+            distributed_state_sharding=distributed_state_sharding,
+            state_wire_dtype=getattr(args, "optimizer_state_wire_dtype", "auto"),
+            profile_communication=getattr(args, "optimizer_comm_profile", False),
         )
         if optimizer_cls is FP8CoordMuon:
             if qargs is None:

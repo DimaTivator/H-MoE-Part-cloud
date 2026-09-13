@@ -34,3 +34,12 @@ class DistributedBackend(object):
 
     def barrier(self):
         pass
+
+    def start_step_profile(self):
+        pass
+
+    def finish_step_profile(self):
+        pass
+
+    def get_last_comm_profile(self):
+        return {}

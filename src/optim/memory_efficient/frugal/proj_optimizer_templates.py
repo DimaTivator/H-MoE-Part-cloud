@@ -311,7 +311,14 @@ class CoordOptimizer(ProjOptimizer):
             state = self.state[p]
             grad = p.grad
             if "projector" not in state:
-                state["projector"] = CoordinateProjector(group["density"], grad_shape=grad.shape, coord_choice=group["coord_choice"])
+                state_comm = getattr(self, "_state_comm", None)
+                state["projector"] = CoordinateProjector(
+                    group["density"],
+                    grad_shape=grad.shape,
+                    coord_choice=group["coord_choice"],
+                    process_group=(state_comm.process_group if state_comm else None),
+                    synchronize=bool(state_comm and state_comm.enabled),
+                )
             state["projector"].update_proj(grad)
             
             if "step" not in state or group["reset_statistics"]:

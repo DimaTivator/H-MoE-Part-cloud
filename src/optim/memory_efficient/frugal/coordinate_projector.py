@@ -1,10 +1,20 @@
 import torch
+import torch.distributed as dist
 
 class CoordinateProjector:
-    def __init__(self, density, grad_shape, coord_choice="columns"):
+    def __init__(
+        self,
+        density,
+        grad_shape,
+        coord_choice="columns",
+        process_group=None,
+        synchronize=False,
+    ):
         self.density = density
         self.coord_choice = coord_choice
         self.grad_shape = grad_shape
+        self.process_group = process_group
+        self.synchronize = synchronize
         self.indices = None
 
     def update_proj(self, grad):
@@ -46,4 +56,13 @@ class CoordinateProjector:
         return full_rank
         
     def _get_indices(self, total_length, device):
-        return torch.randperm(total_length, device=device)[:int(total_length * self.density)]
+        count = int(total_length * self.density)
+        if not self.synchronize:
+            return torch.randperm(total_length, device=device)[:count]
+
+        if dist.get_rank(self.process_group) == 0:
+            indices = torch.randperm(total_length, device=device)[:count]
+        else:
+            indices = torch.empty(count, dtype=torch.long, device=device)
+        dist.broadcast(indices, src=0, group=self.process_group)
+        return indices

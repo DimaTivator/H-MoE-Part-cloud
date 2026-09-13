@@ -476,6 +476,9 @@ def main(args):
             total_steps=args.iterations,
             warmup_steps=args.warmup_steps,
             qargs=args.qargs if args.fp8_optim else None,
+            distributed_state_sharding=args.optimizer_state_sharding,
+            state_wire_dtype=args.optimizer_state_wire_dtype,
+            profile_communication=args.optimizer_comm_profile,
             **lite_kwargs,
         )
     elif args.opt in ("loro", "loro_adpt"):

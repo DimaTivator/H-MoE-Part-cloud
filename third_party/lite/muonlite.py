@@ -9,6 +9,7 @@ from optim.fp8_state import (
     init_fp8_state,
     quantize_fp8_state_,
 )
+from optim.distributed_state_comm import DistributedStateCommunicator, RowShard
 
 
 __all__ = ["MuonLite"]
@@ -200,6 +201,9 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
         warmup_steps: int = 1000,
         min_lr_ratio: float = 0.1,
         qargs=None,
+        distributed_state_sharding: bool = False,
+        state_wire_dtype: str = "auto",
+        profile_communication: bool = False,
     ):
         defaults = dict(
             lr=lr,
@@ -226,6 +230,12 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
         self.adamw_b2 = adamw_betas[1]
         self.smooth_ratio = 0.1
         self.qargs = qargs
+        self._state_comm = DistributedStateCommunicator(
+            enabled=distributed_state_sharding,
+            wire_dtype=state_wire_dtype,
+            qargs=qargs,
+            profile=profile_communication,
+        )
         # T_f: fraction of post-warmup period for flat ramp-up (cosine schedule)
         self.T_f = 0.5
         self.iter = 0
@@ -276,6 +286,17 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
                 self.state[p]["lr_ratio"] = 1.0
                 self.state[p]["flat_warmup"] = 0
 
+        if self._state_comm.enabled and any(
+            state.get("use_muon") == 1 for state in self.state.values()
+        ):
+            raise ValueError(
+                "Distributed optimizer-state sharding currently supports vanilla "
+                "Muon (--opt muon), not MuonLite (--opt muonlite)."
+            )
+
+    def get_last_comm_profile(self):
+        return self._state_comm.get_last_profile()
+
     def get_lr_ratio(self, lr_ratio, flat_mode):
         """Compute time-varying LR amplification factor for flat directions."""
         if flat_mode == 0 or flat_mode is None:
@@ -318,6 +339,7 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self, closure=None):
+        self._state_comm.start_step()
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -431,15 +453,30 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
                     continue
                 state = self.state[p]
                 m, n = g.size(0), g.size(1)
+                local = self._state_comm.local_rows(g)
+                local_g = local.tensor
 
                 if "step" not in state:
                     state["step"] = 0
 
                 if "momentum" not in state:
                     if self.qargs is None:
-                        state["momentum"] = torch.zeros_like(g)
+                        state["momentum"] = torch.zeros_like(local_g)
                     else:
-                        init_fp8_state(state, "momentum", g, self.qargs, order="first")
+                        init_fp8_state(
+                            state,
+                            "momentum",
+                            local_g,
+                            self.qargs,
+                            order="first",
+                        )
+                    state["state_world_size"] = self._state_comm.world_size
+
+                if state.get("state_world_size", 1) != self._state_comm.world_size:
+                    raise ValueError(
+                        "Muon optimizer state was saved with a different world size; "
+                        "resharding checkpoints is not implemented."
+                    )
 
                 momentum = (
                     state["momentum"]
@@ -451,9 +488,17 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
                         signed=True,
                     )
                 )
-                momentum = momentum * muon_theta + g * (1 - muon_theta)
-                M = momentum + g * (1 - muon_theta) / muon_theta
-                u = zeropower_via_newtonschulz5(M, ns_steps)
+                momentum = momentum * muon_theta + local_g * (1 - muon_theta)
+                local_M = momentum + local_g * (1 - muon_theta) / muon_theta
+                if self._state_comm.enabled:
+                    M = self._state_comm.gather_rows(
+                        RowShard(local_M, local.original_rows),
+                        state_derived=True,
+                    )
+                else:
+                    M = local_M
+                with self._state_comm.phase("orthogonalize", M):
+                    u = zeropower_via_newtonschulz5(M, ns_steps)
 
                 if state["step"] == 0:
                     logger.info(f"{state['name']}, vanilla_muon")
@@ -584,4 +629,5 @@ class MuonLite(FP8StateDictMixin, torch.optim.Optimizer):
                     )
 
         self.iter += 1
+        self._state_comm.finish_step()
         return loss

@@ -68,6 +68,24 @@ def _log_local_metric(cfg, record):
     print(f"METRIC_JSON={encoded}", flush=True)
 
 
+def _tree_tensor_bytes(value) -> int:
+    if isinstance(value, torch.Tensor):
+        return value.numel() * value.element_size()
+    if isinstance(value, dict):
+        return sum(_tree_tensor_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_tree_tensor_bytes(item) for item in value)
+    return 0
+
+
+def _optimizer_state_bytes(optimizer) -> int:
+    if hasattr(optimizer, "proj_opt") and hasattr(optimizer, "non_proj_opt"):
+        return _optimizer_state_bytes(optimizer.proj_opt) + _optimizer_state_bytes(
+            optimizer.non_proj_opt
+        )
+    return _tree_tensor_bytes(getattr(optimizer, "state", {}))
+
+
 def _sanitize_remote_name(value):
     return "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value)
 
@@ -403,6 +421,20 @@ def train(
         _t_bwd  = []
         _t_opt  = []
 
+    _step_time_bench = os.environ.get("STEP_TIME_BENCH", "false") in ["1", "True", "true"]
+    if _step_time_bench:
+        _step_time_warmup = int(os.environ.get("STEP_TIME_WARMUP_STEPS", "10"))
+        _step_time_measure = int(os.environ.get("STEP_TIME_MEASURE_STEPS", "50"))
+        if _step_time_warmup < 0 or _step_time_measure <= 0:
+            raise ValueError(
+                "STEP_TIME_WARMUP_STEPS must be >= 0 and "
+                "STEP_TIME_MEASURE_STEPS must be > 0"
+            )
+        _step_time_stop = _step_time_warmup + _step_time_measure
+        _step_times_ms = []
+        _step_optimizer_times_ms = []
+        _step_peak_memory_gb = []
+        _step_comm_profiles = []
     while curr_iter <= cfg.iterations:
         # Save permanent checkpoint
         if curr_iter > 0 and cfg.permanent_ckpt_interval > 0 and exp_dir is not None:
@@ -539,6 +571,9 @@ def train(
                 _mem_before_batch.append(memory_usage)
 
         # Train model
+        distributed_backend.start_step_profile()
+        if _step_time_bench and "cuda" in cfg.device:
+            torch.cuda.synchronize()
         t_start = time.perf_counter_ns()
         if "cuda" in cfg.device:
             torch.cuda.reset_peak_memory_stats()
@@ -623,6 +658,8 @@ def train(
             if _use_fp8 and microstep_idx == 0:
                 FP8Manager.is_first_microbatch = False
 
+        distributed_backend.finish_step_profile()
+
         if cfg.grad_clip != 0.0:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip).item()
         if cfg.opt == "SFAdamW":
@@ -638,7 +675,23 @@ def train(
         if _time_bench:
             torch.cuda.synchronize()
             _tb4 = time.perf_counter_ns()
+        if _step_time_bench and "cuda" in cfg.device:
+            torch.cuda.synchronize()
+        _step_optimizer_start = time.perf_counter_ns()
         opt.step()
+        if _step_time_bench and "cuda" in cfg.device:
+            torch.cuda.synchronize()
+        _step_optimizer_elapsed_ms = (
+            time.perf_counter_ns() - _step_optimizer_start
+        ) / 1e6
+        if _step_time_bench:
+            _step_optimizer_times_ms.append(_step_optimizer_elapsed_ms)
+            profile_getter = getattr(opt, "get_last_comm_profile", None)
+            optimizer_profile = (
+                profile_getter() if profile_getter is not None else {}
+            )
+            optimizer_profile.update(distributed_backend.get_last_comm_profile())
+            _step_comm_profiles.append(optimizer_profile)
         if debug_dtypes and curr_iter == 1:
             print_gradient_dtypes(model, distributed_backend)
             print_optimizer_dtypes(opt, distributed_backend)
@@ -656,7 +709,18 @@ def train(
             )
         if cfg.exponential_moving_average:
             ema.step(not_compiled_model, distributed_backend.is_master_process())
+        if _step_time_bench and "cuda" in cfg.device:
+            torch.cuda.synchronize()
         dt = (time.perf_counter_ns() - t_start) / 1e9
+
+        if _step_time_bench:
+            _step_times_ms.append(dt * 1e3)
+            peak_memory_gb = (
+                torch.cuda.max_memory_allocated() / 1e9
+                if "cuda" in cfg.device
+                else 0.0
+            )
+            _step_peak_memory_gb.append(peak_memory_gb)
 
         if _time_bench:
             _t_data.append(_iter_t_data / 1e6)
@@ -717,6 +781,123 @@ def train(
                 )
                 exit(0)
 
+        if _step_time_bench and curr_iter == _step_time_stop:
+            measured = _step_times_ms[_step_time_warmup:_step_time_stop]
+            measured_optimizer = _step_optimizer_times_ms[
+                _step_time_warmup:_step_time_stop
+            ]
+            measured_memory = _step_peak_memory_gb[_step_time_warmup:_step_time_stop]
+            measured_profiles = _step_comm_profiles[
+                _step_time_warmup:_step_time_stop
+            ]
+
+            def _distributed_max(values):
+                tensor = torch.tensor(values, dtype=torch.float64, device=cfg.device)
+                if torch.distributed.is_available() and torch.distributed.is_initialized():
+                    torch.distributed.all_reduce(
+                        tensor, op=torch.distributed.ReduceOp.MAX
+                    )
+                return tensor.cpu().tolist()
+
+            measured = _distributed_max(measured)
+            measured_optimizer = _distributed_max(measured_optimizer)
+            measured_memory = _distributed_max(measured_memory)
+            ordered = sorted(measured)
+
+            def _percentile(values, fraction):
+                index = round((len(values) - 1) * fraction)
+                return values[index]
+
+            result = {
+                "warmup_steps": _step_time_warmup,
+                "measure_steps": _step_time_measure,
+                "step_time_ms_mean": sum(measured) / len(measured),
+                "step_time_ms_p50": _percentile(ordered, 0.50),
+                "step_time_ms_p95": _percentile(ordered, 0.95),
+                "step_time_ms_min": ordered[0],
+                "step_time_ms_max": ordered[-1],
+                "peak_memory_gb": max(measured_memory),
+                "optimizer_step_ms_mean": (
+                    sum(measured_optimizer) / len(measured_optimizer)
+                ),
+            }
+
+            local_state_bytes = torch.tensor(
+                float(_optimizer_state_bytes(opt)),
+                dtype=torch.float64,
+                device=cfg.device,
+            )
+            max_state_bytes = local_state_bytes.clone()
+            sum_state_bytes = local_state_bytes.clone()
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(
+                    max_state_bytes, op=torch.distributed.ReduceOp.MAX
+                )
+                torch.distributed.all_reduce(
+                    sum_state_bytes, op=torch.distributed.ReduceOp.SUM
+                )
+            result["optimizer_state_bytes_per_rank_max"] = max_state_bytes.item()
+            result["optimizer_state_bytes_all_ranks_sum"] = sum_state_bytes.item()
+
+            profile_keys = sorted(
+                {key for profile in measured_profiles for key in profile}
+            )
+            for key in profile_keys:
+                values = _distributed_max(
+                    [float(profile.get(key, 0.0)) for profile in measured_profiles]
+                )
+                suffix = "_mean" if key.endswith("_ms") else "_per_step"
+                result[f"{key}{suffix}"] = sum(values) / len(values)
+
+            result["training_outside_optimizer_ms_mean"] = max(
+                0.0,
+                result["step_time_ms_mean"] - result["optimizer_step_ms_mean"],
+            )
+            accounted_optimizer_ms = sum(
+                result.get(key, 0.0)
+                for key in (
+                    "optimizer_state_comm_ms_mean",
+                    "optimizer_state_encode_ms_mean",
+                    "optimizer_state_decode_ms_mean",
+                    "optimizer_state_orthogonalize_ms_mean",
+                )
+            )
+            result["optimizer_other_ms_mean"] = max(
+                0.0,
+                result["optimizer_step_ms_mean"] - accounted_optimizer_ms,
+            )
+            state_comm_ms = result.get("optimizer_state_comm_ms_mean", 0.0)
+            state_rx_bytes = result.get(
+                "optimizer_state_rx_bytes_per_step", 0.0
+            )
+            state_wire_bytes = result.get(
+                "optimizer_state_wire_bytes_per_step", 0.0
+            )
+            state_payload_bytes = result.get(
+                "optimizer_state_payload_bytes_per_step", 0.0
+            )
+            result["optimizer_state_comm_fraction_of_step"] = (
+                state_comm_ms / result["step_time_ms_mean"]
+                if result["step_time_ms_mean"] > 0
+                else 0.0
+            )
+            result["optimizer_state_effective_rx_gbps"] = (
+                state_rx_bytes / state_comm_ms / 1e6
+                if state_comm_ms > 0
+                else 0.0
+            )
+            result["optimizer_state_payload_to_wire_ratio"] = (
+                state_payload_bytes / state_wire_bytes
+                if state_wire_bytes > 0
+                else 0.0
+            )
+
+            if distributed_backend.is_master_process():
+                print(
+                    f"\n[STEP TIME BENCH RESULT] "
+                    f"{json.dumps(result, sort_keys=True)}"
+                )
+            return {"step_time_bench": result}
         if (
             cfg.log_interval
             and curr_iter % cfg.log_interval == 0
