@@ -113,7 +113,7 @@ run_rho() {
         --experiment-name "${experiment}" \
         --seed "${RUN_SEED}" --data-seed 1337 \
         --dataset fineweb --datasets-dir "${DATASETS_DIR}" \
-        --fineweb-replay-world-size 1 --fineweb-replay-layout concat \
+        --fineweb-replay-world-size 2 --fineweb-replay-layout concat \
         --eval-cache-dir "${EVAL_CACHE_DIR}" \
         --sequence-length 1024 --streaming --workers 8 \
         --model llama --n-layer 12 --n-embd 1024 --n-head 8 --multiple-of 256 \
@@ -122,7 +122,7 @@ run_rho() {
         --lr 1e-3 --weight-decay 0.1 --beta1 0.9 --beta2 0.999 \
         --grad-clip 1.0 --density "${rho}" --update_gap 50 \
         --scheduler cos --warmup-steps "${warmup}" --iterations "${iterations}" \
-        --batch-size 16 --acc-steps 8 \
+        --batch-size 32 --acc-steps 4 \
         --eval-interval "${eval_interval}" --eval-batches "${eval_batches}" \
         --log-interval "${log_interval}" \
         "${eval_args[@]}" "${save_args[@]}" \
