@@ -4,7 +4,6 @@ set -euo pipefail
 MODE=${MODE:-smoke}
 NPROC_PER_NODE=${NPROC_PER_NODE:-1}
 RUN_ID=${RUN_ID:?RUN_ID must be set to a common value for all mlsub ranks}
-DATASETS_DIR=${DATASETS_DIR:-/workspace-SR006.nfs3/dimativator/fineweb-h200-packed}
 RESULTS_ROOT=${RESULTS_ROOT:-/workspace-SR006.nfs3/dimativator/optimizer-state-comm-cloud-20260913}
 EVAL_CACHE_DIR=${EVAL_CACHE_DIR:-/home/jovyan/evals_cache}
 
@@ -24,6 +23,7 @@ esac
 MPI_SIZE=${OMPI_COMM_WORLD_SIZE:-1}
 MPI_RANK=${OMPI_COMM_WORLD_RANK:-0}
 MPI_LOCAL_RANK=${OMPI_COMM_WORLD_LOCAL_RANK:-0}
+SYNTHETIC_DATA_DIR="/tmp/optimizer-state-comm-data-${RUN_ID}-rank${MPI_RANK}"
 if (( MPI_SIZE > 1 && MPI_SIZE != NPROC_PER_NODE )); then
     echo "mlsub MPI world size ${MPI_SIZE} != ${NPROC_PER_NODE}" >&2
     exit 8
@@ -59,10 +59,21 @@ assert triton.__version__ == "3.5.1", triton.__version__
 print("ENVIRONMENT_CHECK=ok", torch.__version__, torch.version.cuda)
 PY
 
-if [[ ! -f "${DATASETS_DIR}/packed_metadata.json" ]]; then
-    echo "Packed H200 data is missing: ${DATASETS_DIR}" >&2
-    exit 5
-fi
+mkdir -p "${SYNTHETIC_DATA_DIR}"
+python - "${SYNTHETIC_DATA_DIR}" <<'PY'
+from pathlib import Path
+import sys
+
+import numpy as np
+
+root = Path(sys.argv[1])
+rng = np.random.default_rng(1337)
+for name, size in (("train.bin", 2_000_000), ("val.bin", 100_000)):
+    target = root / name
+    if not target.exists():
+        rng.integers(0, 50304, size=size, dtype=np.uint16).tofile(target)
+print(f"SYNTHETIC_DATASET={root}")
+PY
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -73,7 +84,7 @@ mkdir -p "${TRITON_CACHE_DIR}"
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python scripts/benchmarks/optimizer_state_communication_cloud.py \
-    --datasets-dir "${DATASETS_DIR}" \
+    --datasets-dir "${SYNTHETIC_DATA_DIR}" \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     "${MODE_ARGS[@]}"
