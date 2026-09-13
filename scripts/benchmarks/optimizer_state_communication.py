@@ -22,6 +22,7 @@ MODEL_CONFIGS = {
     "500M": {"n_layer": 18, "n_embd": 1280, "n_head": 20},
     "1B": {"n_layer": 30, "n_embd": 1536, "n_head": 12},
     "2.8B": {"n_layer": 32, "n_embd": 2560, "n_head": 20},
+    "4.3B": {"n_layer": 32, "n_embd": 3200, "n_head": 25},
 }
 METHODS = {
     "muon": {"optimizer": "muon", "fp8": False},
