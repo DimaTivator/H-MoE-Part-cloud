@@ -88,3 +88,9 @@ python scripts/benchmarks/optimizer_state_communication_cloud.py \
     --eval-cache-dir "${EVAL_CACHE_DIR}" \
     --output-dir "${OUTPUT_DIR}" \
     "${MODE_ARGS[@]}"
+
+if (( MPI_RANK == 0 )); then
+    echo "FINAL_RESULTS_BEGIN"
+    sed 's/^/FINAL_RESULT=/' "${OUTPUT_DIR}/results.jsonl"
+    echo "FINAL_RESULTS_END"
+fi
